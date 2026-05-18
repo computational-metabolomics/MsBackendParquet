@@ -1,0 +1,137 @@
+---
+title: "Apache Parquet-based Mass Spectrometry Data Backend"
+author:
+- name: Ossama Edbali
+package: MsBackendParquet
+output:
+  BiocStyle::html_document:
+    toc_float: true
+vignette: >
+  %\VignetteIndexEntry{Apache Parquet-based Mass Spectrometry Data Backend}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r style, echo = FALSE, results = "asis", message = FALSE}
+BiocStyle::markdown()
+```
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Introduction
+
+The `r Biocpkg("MsBackendParquet")` package provides a backend for
+`r Biocpkg("Spectra")` objects that stores mass spectrometry (MS) data
+in an on-disk [Apache Parquet](https://parquet.apache.org/) dataset,
+accessed through the [Apache Arrow](https://arrow.apache.org/docs/r) R
+bindings.
+
+The backend extends `MsBackendCached` from `r Biocpkg("Spectra")` so it
+benefits from caching of user-defined spectra variables while keeping
+the on-disk dataset read-only.
+
+# Creating a Parquet dataset
+
+A Parquet dataset can be created from raw MS data files (mzML, mzXML,
+netCDF) via `createMsBackendParquetDataset()`:
+
+```{r, eval = FALSE}
+library(Spectra)
+library(MsBackendParquet)
+
+files <- c("sample-1.mzML", "sample-2.mzML")
+path  <- tempfile()
+createMsBackendParquetDataset(path = path, x = files,
+                              partitioning = "dataOrigin",
+                              compression = "snappy")
+```
+
+The function imports MS data via `MsBackendMzR()` by default and
+writes spectra metadata together with the `mz`/`intensity` values as
+Parquet `list<double>` columns.
+
+For the rest of the vignette we work with a small in-memory data set
+so the document can be built without external files:
+
+```{r build-dataset}
+library(Spectra)
+library(MsBackendParquet)
+
+sd <- S4Vectors::DataFrame(
+    msLevel = c(1L, 1L, 2L),
+    rtime = c(1.0, 2.0, 3.0),
+    precursorMz = c(NA_real_, NA_real_, 110.5),
+    dataOrigin = c("file-a", "file-a", "file-b"))
+sd$mz <- IRanges::NumericList(c(100, 110), c(101, 111),
+                              c(102, 112), compress = FALSE)
+sd$intensity <- IRanges::NumericList(c(10, 20), c(11, 21),
+                                     c(12, 22), compress = FALSE)
+
+path <- tempfile()
+be <- backendInitialize(MsBackendParquet(), path = path, data = sd)
+be
+```
+
+# Accessing data
+
+`spectraData()`, `peaksData()`, `mz()`, `intensity()` and friends work
+the same way as for any other `MsBackend`:
+
+```{r access}
+spectraData(be, c("msLevel", "rtime"))
+peaksData(be)[1:2]
+mz(be)
+```
+
+# Filtering with Arrow predicate push-down
+
+Filter methods are implemented as `dplyr` lazy queries on the open
+dataset and benefit from Arrow's predicate push-down:
+
+```{r filtering}
+filterMsLevel(be, 1L)
+filterRt(be, c(1.5, 2.5))
+filterDataOrigin(be, "file-b")
+```
+
+# Streaming large mzML files
+
+For very large mzML files, the default conversion path goes through a
+`Spectra` object built with `MsBackendMzR()`, which materialises a
+whole chunk of peaks in memory before writing it to Parquet. The
+`engine = "mzr"` option bypasses `Spectra` entirely and streams
+batches of spectra directly from `mzR::openMSfile()` into Apache
+Arrow's incremental `ParquetFileWriter`:
+
+```{r, eval = FALSE}
+be <- mzMLToParquet("huge-sample.mzML",
+                    path = tempfile(),
+                    engine = "mzr",
+                    batch_size = 1000L)
+```
+
+Memory use stays bounded by `batch_size * mean(peaks per spectrum)`,
+regardless of total file size. The streaming engine processes files
+serially and requires the `mzR` package; it does not honour `BPPARAM`
+or `chunksize`.
+
+# Saving and reloading the backend
+
+Because `MsBackendParquet` objects only contain a file system path,
+they are fully serialisable and can be sent to parallel workers
+without re-opening connections:
+
+```{r save-load}
+rds <- tempfile(fileext = ".rds")
+saveRDS(be, rds)
+be2 <- readRDS(rds)
+identical(spectraNames(be), spectraNames(be2))
+```
+
+# Session information
+
+```{r si}
+sessionInfo()
+```

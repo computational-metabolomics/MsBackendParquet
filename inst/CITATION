@@ -1,0 +1,11 @@
+citHeader("To cite the MsBackendParquet package in publications use:")
+
+bibentry(
+    bibtype = "Manual",
+    title   = "MsBackendParquet: Apache Parquet-based Mass Spectrometry Data Backend",
+    author  = c(person("Ossama", "Edbali")),
+    year    = format(Sys.Date(), "%Y"),
+    note    = paste("R package version",
+                    meta$Version),
+    url     = "https://github.com/ossedb/MsBackendParquet"
+)

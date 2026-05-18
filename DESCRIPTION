@@ -1,0 +1,54 @@
+Package: MsBackendParquet
+Title: Apache Parquet-based Mass Spectrometry Data Backend
+Version: 0.99.0
+Authors@R:
+    person(given = "Ossama", family = "Edbali",
+           email = "ossedb@gmail.com",
+           role = c("aut", "cre"))
+Description: Mass spectrometry (MS) data backend for the Spectra
+    Bioconductor package that stores and retrieves spectra and peak data
+    from on-disk Apache Parquet datasets via the Apache Arrow R bindings.
+    Spectra metadata together with m/z and intensity values are stored in
+    a columnar Parquet format that supports compression, dictionary
+    encoding and Hive-style partitioning. The backend exploits Arrow's
+    lazy evaluation and predicate push-down to efficiently filter and
+    subset large MS datasets without loading the full data into memory.
+    Datasets can be created from raw MS data files (mzML, mzXML, netCDF)
+    or by switching the backend of an existing Spectra object.
+License: Artistic-2.0
+Encoding: UTF-8
+Depends:
+    R (>= 4.4.0),
+    Spectra (>= 1.16.0)
+Imports:
+    arrow (>= 14.0.0),
+    BiocGenerics,
+    BiocParallel,
+    dplyr,
+    fs,
+    IRanges,
+    methods,
+    MsCoreUtils,
+    ProtGenerics (>= 1.36.0),
+    rlang,
+    S4Vectors,
+    utils
+Suggests:
+    BiocStyle,
+    knitr,
+    MsDataHub,
+    mzR,
+    rmarkdown,
+    testthat (>= 3.0.0)
+URL: https://github.com/ossedb/MsBackendParquet
+BugReports: https://github.com/ossedb/MsBackendParquet/issues
+biocViews: Infrastructure, MassSpectrometry, Metabolomics, Proteomics,
+    DataImport
+VignetteBuilder: knitr
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Collate:
+    'MsBackendParquet-functions.R'
+    'MsBackendParquet.R'
+    'MsBackendParquet-creators.R'
+Config/testthat/edition: 3
