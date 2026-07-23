@@ -20,9 +20,6 @@ test_that("mzMLToParquet rejects unsupported extensions", {
 })
 
 test_that("mzMLToParquet refuses to overwrite without flag", {
-    ## Use the test backend fixture from setup-data.R as a stand-in for an
-    ## existing dataset, then assert that the wrapper refuses to clobber
-    ## it without `overwrite = TRUE`.
     be <- .make_test_backend()
     dummy <- tempfile(fileext = ".mzML")
     file.create(dummy)

@@ -9,3 +9,5 @@
 ^pkgdown$
 ^docs$
 ^CRAN-RELEASE$
+^\.positai$
+^\.claude$

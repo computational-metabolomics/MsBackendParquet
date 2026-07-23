@@ -55,9 +55,11 @@
 #'
 #' Because the backend stores only a file system path (and not a live
 #' connection), `MsBackendParquet` objects can be serialised to disk
-#' with [save()] / [saveRDS()] and reused across parallel workers.
-#' Accordingly, [backendBpparam()] returns the requested parallel
-#' processing setup unchanged.
+#' with [save()] / [base::saveRDS()] and reused across parallel workers.
+#' The DuckDB connection used to read the dataset is held at package
+#' level, not on the object, and is keyed by process id, so a forked
+#' worker transparently opens its own. Accordingly, [backendBpparam()]
+#' returns the requested parallel processing setup unchanged.
 #'
 #' @section Creation of backend objects:
 #'
@@ -131,9 +133,6 @@
 #'
 #' @param BPPARAM for `backendBpparam()`: parallel processing setup.
 #'
-#' @param backend For `createMsBackendParquetDataset()`: MS backend used
-#'     to import the raw MS data.
-#'
 #' @param columns For `spectraData()`: `character` with the names of the
 #'     spectra variables to return. Defaults to all available variables.
 #'     For `peaksData()`: `character` with the peaks variables to
@@ -192,9 +191,9 @@
 #'
 #' @name MsBackendParquet
 #'
-#' @return See the description of the individual methods.
+#' @useDynLib MsBackendParquet, .registration = TRUE
 #'
-#' @author Ossama Edbali
+#' @return See the description of the individual methods.
 #'
 #' @md
 #'
@@ -203,7 +202,7 @@
 #' @examples
 #' library(MsBackendParquet)
 #'
-#' ## Create a tiny in-memory `Spectra`-like data frame.
+#' # Create a tiny in-memory `Spectra`-like data frame.
 #' sd <- S4Vectors::DataFrame(
 #'     msLevel = c(1L, 1L, 2L),
 #'     rtime = c(1.0, 2.0, 3.0),
@@ -231,13 +230,19 @@ setClass(
         spectraIds = "integer",
         .dataset_vars = "character",
         .peaks_vars = "character",
-        partitioning = "character"),
+        partitioning = "character",
+        .full = "logical",
+        .pending_predicate = "ANY",
+        .predicate_clean = "logical"),
     prototype = prototype(
         path = character(),
         spectraIds = integer(),
         .dataset_vars = character(),
         .peaks_vars = c("mz", "intensity"),
         partitioning = character(),
+        .full = FALSE,
+        .pending_predicate = NULL,
+        .predicate_clean = FALSE,
         readonly = TRUE, version = "0.1"))
 
 #' @importFrom methods validObject
@@ -274,8 +279,9 @@ MsBackendParquet <- function() {
 #' @rdname MsBackendParquet
 setMethod("show", "MsBackendParquet", function(object) {
     methods::callNextMethod()
-    if (length(.path(object)))
+    if (length(.path(object))) {
         cat("Dataset: ", .path(object), "\n", sep = "")
+    }
 })
 
 #' @exportMethod backendInitialize
@@ -297,7 +303,7 @@ setMethod(
         }
 
         path <- normalizePath(path, mustWork = FALSE)
-        ## If `data` is given, materialise a new dataset at `path`.
+        # If `data` is given, materialise a new dataset at `path`.
         if (!missing(data)) {
             if (.is_parquet_dataset(path)) {
                 stop("A MsBackendParquet dataset already exists at '",
@@ -313,12 +319,16 @@ setMethod(
         object@spectraIds <- .dataset_spectra_ids(path)
         object@.dataset_vars <- .dataset_var_names(path)
         object@.peaks_vars <- .dataset_peak_names(path)
+        object@.full <- TRUE
         sv <- union(object@.dataset_vars, object@.peaks_vars)
         object <- methods::callNextMethod(
             object,
             nspectra = length(object@spectraIds),
             spectraVariables = sv)
         methods::validObject(object)
+
+        # Load the filter columns once so the first filter does not pay for it.
+        .meta_cache_warm(path, object@.dataset_vars, length(object@spectraIds))
         object
     })
 
@@ -358,7 +368,15 @@ setMethod("[", "MsBackendParquet", function(x, i, j, ..., drop = FALSE) {
 setMethod(
     "extractByIndex", c("MsBackendParquet", "ANY"),
     function(object, i) {
-        methods::slot(object, "spectraIds", check = FALSE) <- object@spectraIds[i]
+        new_ids <- object@spectraIds[i]
+        changed <- length(new_ids) != length(object@spectraIds) ||
+            is.unsorted(new_ids) ||
+            !identical(new_ids, object@spectraIds)
+        if (changed) {
+            object@.full <- FALSE
+            object@.predicate_clean <- FALSE
+        }
+        methods::slot(object, "spectraIds", check = FALSE) <- new_ids
         methods::callNextMethod(object, i = i)
     })
 
@@ -388,9 +406,7 @@ setMethod("peaksVariables", "MsBackendParquet", function(object) {
 #'
 #' @rdname MsBackendParquet
 setMethod("intensity", "MsBackendParquet", function(object) {
-    IRanges::NumericList(
-        .fetch_peaks_data(object, columns = "intensity", drop = TRUE),
-        compress = FALSE)
+    .fetch_peaks_column(object, "intensity")
 })
 
 #' @exportMethod intensity<-
@@ -409,9 +425,7 @@ setReplaceMethod("intensity", "MsBackendParquet", function(object, value) {
 #'
 #' @rdname MsBackendParquet
 setMethod("mz", "MsBackendParquet", function(object) {
-    IRanges::NumericList(
-        .fetch_peaks_data(object, columns = "mz", drop = TRUE),
-        compress = FALSE)
+    .fetch_peaks_column(object, "mz")
 })
 
 #' @exportMethod mz<-
@@ -428,8 +442,9 @@ setReplaceMethod("mz", "MsBackendParquet", function(object, value) {
 #'
 #' @export
 setReplaceMethod("$", "MsBackendParquet", function(x, name, value) {
-    if (name == "spectrum_id_")
+    if (name == "spectrum_id_") {
         stop("'spectrum_id_' cannot be modified.", call. = FALSE)
+    }
     methods::callNextMethod()
 })
 
@@ -496,7 +511,12 @@ setMethod(
         }
 
         msLevel <- as.integer(msLevel)
-        .subset_filter(object, rlang::quo(.data$msLevel %in% !!msLevel))
+        where <- .pred_in("msLevel", msLevel)
+        v <- .meta_values(object, "msLevel")
+        if (is.null(v)) {
+            return(.subset_filter(object, where))
+        }
+        .filter_cached(object, v %in% msLevel, where)
     })
 
 #' @importMethodsFrom ProtGenerics filterRt msLevel rtime
@@ -524,21 +544,26 @@ setMethod(
             }
             return(methods::callNextMethod())
         }
-        lo <- if (is.finite(rt[1L])) rt[1L] else -.Machine$double.xmax
-        hi <- if (is.finite(rt[2L])) rt[2L] else .Machine$double.xmax
-        if (length(msLevel.)) {
-            ms <- as.integer(msLevel.)
-            .subset_filter(
-                object,
-                rlang::quo((.data$rtime >= !!lo &
-                            .data$rtime <= !!hi &
-                            .data$msLevel %in% !!ms) |
-                           !(.data$msLevel %in% !!ms)))
-        } else {
-            .subset_filter(
-                object,
-                rlang::quo(.data$rtime >= !!lo & .data$rtime <= !!hi))
+        rng <- .pred_range("rtime", rt[1L], rt[2L])
+        rtv <- .meta_values(object, "rtime")
+        if (!length(msLevel.)) {
+            if (is.null(rtv))
+                return(.subset_filter(object, rng))
+            return(.filter_cached(
+                object, !is.na(rtv) & rtv >= rt[1L] & rtv <= rt[2L], rng))
         }
+        # Spectra of other MS levels pass through untouched.
+        ms <- as.integer(msLevel.)
+        in_ms <- .pred_in("msLevel", ms)
+        where <- .pred_or(.pred_and(rng, in_ms), .pred_not(in_ms))
+        msv <- .meta_values(object, "msLevel")
+        if (is.null(rtv) || is.null(msv))
+            return(.subset_filter(object, where))
+        sel <- msv %in% ms
+        .filter_cached(
+            object,
+            (sel & !is.na(rtv) & rtv >= rt[1L] & rtv <= rt[2L]) | !sel,
+            where)
     })
 
 #' @importMethodsFrom ProtGenerics filterDataOrigin dataOrigin
@@ -558,8 +583,10 @@ setMethod(
         }
 
         dataOrigin <- as.character(dataOrigin)
-        object <- .subset_filter(
-            object, rlang::quo(.data$dataOrigin %in% !!dataOrigin))
+        where <- .pred_in("dataOrigin", dataOrigin, quote = TRUE)
+        v <- .meta_values(object, "dataOrigin")
+        object <- if (is.null(v)) .subset_filter(object, where)
+                  else .filter_cached(object, v %in% dataOrigin, where)
         if (length(dataOrigin) > 1L && length(object)) {
             object <- extractByIndex(
                 object,
@@ -585,12 +612,12 @@ setMethod(
         }
 
         mz <- range(mz)
-        lo <- mz[1L]
-        hi <- mz[2L]
-        .subset_filter(
-            object,
-            rlang::quo(.data$precursorMz >= !!lo &
-                       .data$precursorMz <= !!hi))
+        where <- .pred_range("precursorMz", mz[1L], mz[2L])
+        v <- .meta_values(object, "precursorMz")
+        if (is.null(v)) {
+            return(.subset_filter(object, where))
+        }
+        .filter_cached(object, !is.na(v) & v >= mz[1L] & v <= mz[2L], where)
     })
 
 #' @importMethodsFrom ProtGenerics filterPrecursorMzValues
@@ -621,25 +648,34 @@ setMethod(
         diffs <- MsCoreUtils::ppm(mz, ppm) + tolerance
         los <- mz - diffs
         his <- mz + diffs
-        ## Build a per-range OR expression. Arrow pushes this down.
-        exprs <- lapply(seq_along(mz), function(i) {
-            lo <- los[i]; hi <- his[i]
-            rlang::quo(.data$precursorMz >= !!lo &
-                       .data$precursorMz <= !!hi)
-        })
-        comb <- Reduce(function(a, b) rlang::quo(!!a | !!b), exprs)
-        .subset_filter(object, comb)
+        # Per-value tolerance windows, OR-ed together; DuckDB pushes the
+        # disjunction down to row-group statistics on precursorMz.
+        where <- do.call(.pred_or,
+                         lapply(seq_along(mz), function(i)
+                             .pred_range("precursorMz", los[i], his[i])))
+        v <- .meta_values(object, "precursorMz")
+        if (is.null(v))
+            return(.subset_filter(object, where))
+        keep <- rep(FALSE, length(v))
+        ok <- !is.na(v)
+        for (i in seq_along(mz)) {
+            keep <- keep | (ok & v >= los[i] & v <= his[i])
+        }
+        .filter_cached(object, keep, where)
     })
 
 #' @rdname MsBackendParquet
 #'
 #' @exportMethod uniqueMsLevels
 setMethod("uniqueMsLevels", "MsBackendParquet", function(object, ...) {
-    if (length(.path(object)) && .is_parquet_dataset(.path(object))) {
-        .dataset_unique_ms_levels(.path(object))
-    } else {
-        integer()
+    if (!length(.path(object)) || !.is_parquet_dataset(.path(object))) {
+        return(integer())
     }
+    v <- .meta_values(object, "msLevel")
+    if (!is.null(v)) {
+        return(sort(unique(as.integer(v))))
+    }
+    .dataset_unique_ms_levels(.path(object))
 })
 
 #' @rdname MsBackendParquet
@@ -720,7 +756,7 @@ setMethod("supportsSetBackend", "MsBackendParquet", function(object, ...) {
 setMethod(
     "backendBpparam", signature = "MsBackendParquet",
     function(object, BPPARAM = bpparam()) {
-        ## The backend stores no live connection, so any BPPARAM is fine.
+        # The backend stores no live connection, so any BPPARAM is fine.
         BPPARAM
     })
 

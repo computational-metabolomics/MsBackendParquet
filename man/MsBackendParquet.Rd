@@ -5,7 +5,6 @@
 \alias{MsBackendParquet-class}
 \alias{backendInitialize,MsBackendParquet-method}
 \alias{backendMerge,MsBackendParquet-method}
-\alias{centroided,MsBackendParquet-method}
 \alias{dataStorage,MsBackendParquet-method}
 \alias{extractByIndex,MsBackendParquet,ANY-method}
 \alias{filterDataOrigin,MsBackendParquet-method}
@@ -19,38 +18,55 @@
 \alias{mz<-,MsBackendParquet-method}
 \alias{peaksData,MsBackendParquet-method}
 \alias{peaksVariables,MsBackendParquet-method}
-\alias{precScanNum,MsBackendParquet-method}
 \alias{reset,MsBackendParquet-method}
 \alias{show,MsBackendParquet-method}
-\alias{smoothed,MsBackendParquet-method}
 \alias{spectraData,MsBackendParquet-method}
 \alias{spectraNames,MsBackendParquet-method}
 \alias{spectraNames<-,MsBackendParquet-method}
 \alias{supportsSetBackend,MsBackendParquet-method}
 \alias{tic,MsBackendParquet-method}
 \alias{uniqueMsLevels,MsBackendParquet-method}
-\alias{[,MsBackendParquet-method}
+\alias{[,MsBackendParquet,ANY,ANY-method}
 \alias{$<-,MsBackendParquet-method}
+\alias{precScanNum,MsBackendParquet-method}
+\alias{centroided,MsBackendParquet-method}
+\alias{smoothed,MsBackendParquet-method}
 \alias{backendBpparam,MsBackendParquet-method}
 \title{Apache Parquet-based MS data backend}
 \usage{
 MsBackendParquet()
 
+\S4method{show}{MsBackendParquet}(object)
+
 \S4method{backendInitialize}{MsBackendParquet}(object, path = character(), data, ...)
 
-\S4method{spectraData}{MsBackendParquet}(object, columns = spectraVariables(object))
+\S4method{dataStorage}{MsBackendParquet}(object)
+
+\S4method{[}{MsBackendParquet,ANY,ANY}(x, i, j, ..., drop = FALSE)
+
+\S4method{extractByIndex}{MsBackendParquet,ANY}(object, i)
 
 \S4method{peaksData}{MsBackendParquet}(object, columns = c("mz", "intensity"))
 
 \S4method{peaksVariables}{MsBackendParquet}(object)
 
-\S4method{mz}{MsBackendParquet}(object)
-
 \S4method{intensity}{MsBackendParquet}(object)
 
-\S4method{dataStorage}{MsBackendParquet}(object)
+\S4method{intensity}{MsBackendParquet}(object) <- value
+
+\S4method{mz}{MsBackendParquet}(object)
+
+\S4method{mz}{MsBackendParquet}(object) <- value
+
+\S4method{$}{MsBackendParquet}(x, name) <- value
+
+\S4method{spectraData}{MsBackendParquet}(object, columns = spectraVariables(object))
+
+\S4method{reset}{MsBackendParquet}(object)
 
 \S4method{spectraNames}{MsBackendParquet}(object)
+
+\S4method{spectraNames}{MsBackendParquet}(object) <- value
 
 \S4method{filterMsLevel}{MsBackendParquet}(object, msLevel = uniqueMsLevels(object))
 
@@ -60,14 +76,23 @@ MsBackendParquet()
 
 \S4method{filterPrecursorMzRange}{MsBackendParquet}(object, mz = numeric())
 
-\S4method{filterPrecursorMzValues}{MsBackendParquet}(object, mz = numeric(),
-    ppm = 20, tolerance = 0)
+\S4method{filterPrecursorMzValues}{MsBackendParquet}(object, mz = numeric(), ppm = 20, tolerance = 0)
 
 \S4method{uniqueMsLevels}{MsBackendParquet}(object, ...)
 
+\S4method{backendMerge}{MsBackendParquet}(object, ...)
+
+\S4method{precScanNum}{MsBackendParquet}(object)
+
+\S4method{centroided}{MsBackendParquet}(object)
+
+\S4method{smoothed}{MsBackendParquet}(object)
+
 \S4method{tic}{MsBackendParquet}(object, initial = TRUE)
 
-\S4method{reset}{MsBackendParquet}(object)
+\S4method{supportsSetBackend}{MsBackendParquet}(object, ...)
+
+\S4method{backendBpparam}{MsBackendParquet}(object, BPPARAM = bpparam())
 }
 \arguments{
 \item{object}{A \code{MsBackendParquet} instance.}
@@ -78,57 +103,171 @@ directory.}
 \item{data}{For \code{backendInitialize()}: optional \code{DataFrame} with the
 spectra data that should be written to a new Parquet dataset.}
 
-\item{columns}{For \code{spectraData()}: \code{character} with the spectra
-variables to return. For \code{peaksData()}: \code{character} with the peaks
-variables to return.}
-
-\item{msLevel}{\code{integer} with the MS levels to keep.}
-
-\item{rt}{\code{numeric(2)} with the retention time range.}
-
-\item{msLevel.}{\code{integer} with the MS levels on which the retention
-time filter should be applied.}
-
-\item{dataOrigin}{\code{character} with the data origin values to keep.}
-
-\item{mz}{\code{numeric} with m/z values (precursor m/z) to filter on.}
-
-\item{ppm}{\code{numeric} with the m/z-relative tolerance in ppm.}
-
-\item{tolerance}{\code{numeric} with the absolute m/z tolerance.}
-
-\item{initial}{\code{logical(1)} whether the original \code{totIonCurrent}
-should be returned (\code{TRUE}) or recomputed from intensities.}
-
 \item{...}{Additional arguments. For \code{backendInitialize()} with
-\code{data}: passed to \code{\link{createMsBackendParquetDataset}}.}
+\code{data}: passed to \code{\link[=createMsBackendParquetDataset]{createMsBackendParquetDataset()}}.}
+
+\item{x}{A \code{MsBackendParquet} instance (or a \code{character} with file
+paths for \code{createMsBackendParquetDataset()}).}
+
+\item{i}{For \code{[}: \code{integer}, \code{logical} or \code{character} to subset the
+object.}
+
+\item{j}{For \code{[}: ignored.}
+
+\item{drop}{For \code{[}: ignored.}
+
+\item{columns}{For \code{spectraData()}: \code{character} with the names of the
+spectra variables to return. Defaults to all available variables.
+For \code{peaksData()}: \code{character} with the peaks variables to
+return.}
+
+\item{value}{Replacement value.}
+
+\item{name}{For \verb{$<-}: \code{character(1)} with the variable name.}
+
+\item{msLevel}{For \code{filterMsLevel()}: \code{integer} with the MS levels to
+keep. For \code{uniqueMsLevels()}: ignored.}
+
+\item{rt}{For \code{filterRt()}: \code{numeric(2)} with the retention time
+range.}
+
+\item{msLevel.}{For \code{filterRt()}: \code{integer} with the MS levels on
+which the retention time filter should be applied.}
+
+\item{dataOrigin}{For \code{filterDataOrigin()}: \code{character} with the
+data origin values to keep.}
+
+\item{mz}{For \code{filterPrecursorMzRange()}: \code{numeric(2)} with the lower
+and upper precursor m/z bounds. For \code{filterPrecursorMzValues()}:
+\code{numeric} with the m/z values to keep.}
+
+\item{ppm}{For \code{filterPrecursorMzValues()}: \code{numeric} with the
+m/z-relative tolerance in parts-per-million.}
+
+\item{tolerance}{For \code{filterPrecursorMzValues()}: \code{numeric} with the
+absolute m/z tolerance.}
+
+\item{initial}{For \code{tic()}: \code{logical(1)} whether the original total
+ion current should be returned (\code{TRUE}, default) or computed
+from the intensities (\code{FALSE}).}
+
+\item{BPPARAM}{for \code{backendBpparam()}: parallel processing setup.}
 }
 \value{
 See the description of the individual methods.
 }
 \description{
-\code{MsBackendParquet} is an implementation of \code{\link[Spectra]{MsBackend}}
-for \code{\link[Spectra]{Spectra}} objects that stores and retrieves mass
-spectrometry data from on-disk Apache Parquet datasets via the Apache
-Arrow R bindings.
+The \code{MsBackendParquet} is an implementation of \code{\link[Spectra:MsBackend]{Spectra::MsBackend()}} for
+\code{\link[Spectra:Spectra]{Spectra::Spectra()}} objects that stores and retrieves mass spectrometry
+(MS) data from an on-disk
+\href{https://parquet.apache.org/}{Apache Parquet} dataset.
+
+The backend uses the \href{https://arrow.apache.org/docs/r}{Apache Arrow}
+R bindings to read and write Parquet files. Spectra metadata together
+with the m/z and intensity values (stored as Parquet \verb{list<double>}
+columns) live in a single directory that can optionally be
+Hive-partitioned (for example by \code{dataOrigin}) to enable Arrow's
+partition pruning and parallel processing.
+
+New datasets can be created from raw MS data files using
+\code{\link[=createMsBackendParquetDataset]{createMsBackendParquetDataset()}} or by changing the backend of an
+existing \code{Spectra} object with \code{\link[Spectra:setBackend]{Spectra::setBackend()}}.
 }
 \details{
-The backend extends \code{\link[Spectra]{MsBackendCached}} and is therefore
-read-only for m/z and intensity values, but allows users to cache
-additional or modified spectra variables locally.
+The \code{MsBackendParquet} is principally a \emph{read-only} backend; m/z and
+intensity values cannot be modified once they have been written to
+disk. However, by extending \code{\link[Spectra:MsBackendCached]{Spectra::MsBackendCached()}}, the backend
+allows users to \emph{cache} additional or modified spectra variables
+locally within the object without rewriting the on-disk dataset.
 
-Because objects of class \code{MsBackendParquet} only contain a file
-system path (and no live connection), they are fully serialisable
-with \code{\link[base]{save}} / \code{\link[base]{saveRDS}} and can be used
-in parallel processing pipelines.
-
-See \code{\link{createMsBackendParquetDataset}} for creating datasets from
-raw MS data files.
+Because the backend stores only a file system path (and not a live
+connection), \code{MsBackendParquet} objects can be serialised to disk
+with \code{\link[=save]{save()}} / \code{\link[base:saveRDS]{base::saveRDS()}} and reused across parallel workers.
+The DuckDB connection used to read the dataset is held at package
+level, not on the object, and is keyed by process id, so a forked
+worker transparently opens its own. Accordingly, \code{\link[ProtGenerics:backendBpparam]{backendBpparam()}}
+returns the requested parallel processing setup unchanged.
 }
+\section{Creation of backend objects}{
+
+
+New backend objects can be created with the \code{MsBackendParquet()}
+constructor. To attach the backend to an existing Parquet dataset
+(created previously with \code{createMsBackendParquetDataset()} or
+\code{backendInitialize()} with the \code{data} argument) use:
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{be <- backendInitialize(MsBackendParquet(), path = "/path/to/dataset")
+}\if{html}{\out{</div>}}
+\itemize{
+\item \code{createMsBackendParquetDataset()}: import raw MS data files into a
+new Parquet dataset. See the dedicated help page for details.
+\item \code{backendInitialize()}: attach the backend to an existing dataset.
+With the optional \code{data} argument (a \code{DataFrame} such as returned
+by \code{\link[Spectra:spectraData]{Spectra::spectraData()}}), a \strong{new} dataset is created at
+\code{path} from in-memory data. The dataset must not already exist.
+Additional arguments such as \code{partitioning} or \code{compression} are
+forwarded to \code{\link[=createMsBackendParquetDataset]{createMsBackendParquetDataset()}}.
+\item \code{supportsSetBackend()}: returns \code{TRUE}. Changing to a
+\code{MsBackendParquet} is supported through \code{\link[Spectra:setBackend]{Spectra::setBackend()}},
+passing the destination \code{path} (and optional \code{partitioning} /
+\code{compression}) as named arguments.
+}
+}
+
+\section{Subsetting, merging and filtering data}{
+
+
+\code{MsBackendParquet} objects can be subsetted with \code{[} or
+\code{extractByIndex()}. Internally this only subsets the in-memory
+vector of primary keys; the on-disk dataset is never modified. Any
+subsetting can be undone with \code{reset()}.
+
+Multiple \code{MsBackendParquet} objects pointing to the \strong{same} dataset
+path can be combined with \code{backendMerge()} (mostly useful after a
+\code{split()}).
+
+Filter methods optimised for \code{MsBackendParquet} (via Arrow's predicate
+push-down) are:
+\itemize{
+\item \code{filterDataOrigin()}: keep spectra with matching \code{dataOrigin}.
+\item \code{filterMsLevel()}: keep spectra with the requested MS levels.
+\item \code{filterPrecursorMzRange()}: keep spectra with \code{precursorMz} in the
+given range.
+\item \code{filterPrecursorMzValues()}: keep spectra with \code{precursorMz}
+matching one of the provided values (with \code{ppm} / \code{tolerance}).
+\item \code{filterRt()}: keep spectra with retention times in the given range,
+optionally restricted to selected MS levels.
+}
+
+If a filter variable has been modified locally with \verb{$<-} the default
+\code{\link[Spectra:MsBackendCached]{Spectra::MsBackendCached()}} implementation is used instead so that
+the cached values take precedence over the on-disk ones.
+}
+
+\section{Accessing data}{
+
+\itemize{
+\item \code{dataStorage()}: returns a \code{character} vector with the dataset
+path, one element per spectrum.
+\item \code{intensity()} / \code{mz()}: return \code{\link[IRanges:NumericList]{IRanges::NumericList()}} objects.
+\item \verb{intensity<-} / \verb{mz<-}: not supported.
+\item \code{peaksData()}: returns a \code{list} of two-column matrices.
+\item \code{peaksVariables()}: returns \code{c("mz", "intensity")}.
+\item \code{reset()}: re-initialises the backend from disk and drops cached
+spectra variables.
+\item \code{spectraData()}: returns a \code{DataFrame} with the requested spectra
+variables. Locally cached variables are merged with on-disk ones.
+\item \code{spectraNames()}: returns the (character) \code{spectrum_id_} values.
+\item \code{tic()}: returns the original \code{totIonCurrent} (for \code{initial = TRUE})
+or computes it from the intensity values.
+\item \code{uniqueMsLevels()}: returns the unique MS levels in the dataset.
+}
+}
+
 \examples{
 library(MsBackendParquet)
 
-## Build a tiny in-memory data frame as input.
+# Create a tiny in-memory `Spectra`-like data frame.
 sd <- S4Vectors::DataFrame(
     msLevel = c(1L, 1L, 2L),
     rtime = c(1.0, 2.0, 3.0),
@@ -143,7 +282,4 @@ be <- backendInitialize(MsBackendParquet(), path = path, data = sd)
 be
 spectraVariables(be)
 peaksData(be)
-}
-\author{
-Ossama Edbali
 }

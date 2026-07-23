@@ -65,11 +65,17 @@
 #'     requires only raw input files (no `data` argument) and ignores
 #'     `chunksize` / `BPPARAM`. `mzR` must be installed.
 #'
-#' @param batch_size `integer(1)` number of spectra per row group /
-#'     write call when `engine = "mzr"`. Larger values amortise write
-#'     overhead and compress better at the cost of higher transient
-#'     memory; smaller values keep memory tighter. Ignored for
+#' @param batch_size `integer(1)` number of spectra per write call when
+#'     `engine = "mzr"`. Larger values amortise write overhead at the
+#'     cost of higher transient memory; smaller values keep memory
+#'     tighter. Independent of `row_group_size`. Ignored for
 #'     `engine = "spectra"`.
+#'
+#' @param row_group_size `integer(1)` number of spectra per Parquet
+#'     row group. Smaller row groups give finer-grained pruning for
+#'     narrow range queries (e.g. retention time) at the cost of more
+#'     file metadata; larger groups compress better and reduce per-group
+#'     scan setup. Defaults to 250.
 #'
 #' @return Invisibly returns `path` (with any tilde expanded).
 #'
@@ -91,24 +97,32 @@ createMsBackendParquetDataset <- function(
     compression = .DEFAULT_COMPRESSION,
     BPPARAM = BiocParallel::SerialParam(),
     engine = c("spectra", "mzr"),
-    batch_size = 1000L) {
+    batch_size = 1000L,
+    row_group_size = .DEFAULT_ROW_GROUP_SIZE) {
 
     engine <- match.arg(engine)
-    if (!length(path) || !nzchar(path))
+    if (!length(path) || !nzchar(path)) {
         stop("'path' is required.", call. = FALSE)
+    }
     path <- normalizePath(path, mustWork = FALSE)
-    if (.is_parquet_dataset(path))
+    if (.is_parquet_dataset(path)) {
         stop("A MsBackendParquet dataset already exists at '", path, "'.",
              call. = FALSE)
-    if (!dir.exists(path)) dir.create(path, recursive = TRUE)
+    }
+    if (!dir.exists(path)) {
+        dir.create(path, recursive = TRUE)
+    }
+    .invalidate_dataset_cache(path)
 
     if (!missing(data)) {
-        if (engine == "mzr")
+        if (engine == "mzr") {
             stop("engine = \"mzr\" does not support the 'data' argument: ",
                  "it streams from raw input files. Use engine = \"spectra\" ",
                  "to write an in-memory DataFrame.", call. = FALSE)
+        }
         .write_from_spectra_data(path, data, partitioning = partitioning,
-                                 compression = compression)
+                                 compression = compression,
+                                 row_group_size = row_group_size)
         .write_meta(path, partitioning = partitioning)
         return(invisible(path))
     }
@@ -123,7 +137,8 @@ createMsBackendParquetDataset <- function(
             path = path, files = x,
             batch_size = as.integer(batch_size),
             partitioning = partitioning,
-            compression = compression)
+            compression = compression,
+            row_group_size = row_group_size)
         .write_meta(path, partitioning = partitioning)
         return(invisible(path))
     }
@@ -139,7 +154,8 @@ createMsBackendParquetDataset <- function(
         next_id <- .insert_from_spectra(
             path, sps, index = next_id,
             partitioning = partitioning,
-            compression = compression)
+            compression = compression,
+            row_group_size = row_group_size)
         rm(sps); gc(verbose = FALSE)
     }
     .write_meta(path, partitioning = partitioning)
@@ -199,6 +215,10 @@ createMsBackendParquetDataset <- function(
 #' @param batch_size `integer(1)` number of spectra per write batch
 #'     when `engine = "mzr"`. Ignored otherwise.
 #'
+#' @param row_group_size `integer(1)` number of spectra per Parquet
+#'     row group. See [createMsBackendParquetDataset()] for details.
+#'     Defaults to 250.
+#'
 #' @param verbose `logical(1)` whether to print a short summary of the
 #'     resulting dataset.
 #'
@@ -232,6 +252,7 @@ mzMLToParquet <- function(
     BPPARAM = BiocParallel::SerialParam(),
     engine = c("spectra", "mzr"),
     batch_size = 1000L,
+    row_group_size = .DEFAULT_ROW_GROUP_SIZE,
     verbose = TRUE
 ) {
     engine <- match.arg(engine)
@@ -258,6 +279,7 @@ mzMLToParquet <- function(
             message("Removing existing dataset at '", path, "' ...")
         }
         unlink(path, recursive = TRUE, force = TRUE)
+        .invalidate_dataset_cache(path)
     }
 
     if (verbose) {
@@ -273,7 +295,8 @@ mzMLToParquet <- function(
         compression = compression,
         BPPARAM = BPPARAM,
         engine = engine,
-        batch_size = as.integer(batch_size))
+        batch_size = as.integer(batch_size),
+        row_group_size = as.integer(row_group_size))
 
     be <- backendInitialize(MsBackendParquet(), path = path)
     if (verbose) {
@@ -286,7 +309,9 @@ mzMLToParquet <- function(
     invisible(be)
 }
 
-## ----- writers ------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Writers
+# ------------------------------------------------------------------------------
 
 #' Write the (full) data from a `DataFrame` to a new dataset at `path`.
 #'
@@ -295,11 +320,11 @@ mzMLToParquet <- function(
     path,
     data,
     partitioning = character(),
-    compression = .DEFAULT_COMPRESSION
+    compression = .DEFAULT_COMPRESSION,
+    row_group_size = .DEFAULT_ROW_GROUP_SIZE
 ) {
     if (!all(c("mz", "intensity") %in% colnames(data))) {
-        stop("'data' must contain 'mz' and 'intensity' columns.",
-             call. = FALSE)
+        stop("'data' must contain 'mz' and 'intensity' columns.", call. = FALSE)
     }
     n <- nrow(data)
     mzs <- as.list(data$mz)
@@ -307,8 +332,7 @@ mzMLToParquet <- function(
     data$mz <- NULL
     data$intensity <- NULL
     if ("spectrum_id_" %in% colnames(data)) {
-        warning("Overwriting existing 'spectrum_id_' column.",
-                call. = FALSE)
+        warning("Overwriting existing 'spectrum_id_' column.", call. = FALSE)
         data$spectrum_id_ <- NULL
     }
     data <- as.data.frame(data)
@@ -335,7 +359,8 @@ mzMLToParquet <- function(
     })
     .write_spectra_chunk(path, data, peaks,
                          partitioning = partitioning,
-                         compression = compression)
+                         compression = compression,
+                         row_group_size = row_group_size)
 }
 
 #' Insert one chunk of a `Spectra` object into the dataset, returning
@@ -344,7 +369,8 @@ mzMLToParquet <- function(
 #' @noRd
 .insert_from_spectra <- function(path, sps, index = 0L,
                                  partitioning = character(),
-                                 compression = .DEFAULT_COMPRESSION) {
+                                 compression = .DEFAULT_COMPRESSION,
+                                 row_group_size = .DEFAULT_ROW_GROUP_SIZE) {
     sv <- Spectra::spectraVariables(sps)
     sv <- setdiff(sv, c("mz", "intensity"))
     spd <- as.data.frame(Spectra::spectraData(sps, columns = sv))
@@ -358,8 +384,13 @@ mzMLToParquet <- function(
     .write_spectra_chunk(path, spd, peaks,
                          partitioning = partitioning,
                          compression = compression,
+                         row_group_size = row_group_size,
                          append = TRUE)
-    if (nrow(spd)) spd$spectrum_id_[nrow(spd)] else index
+    if (nrow(spd)) {
+        spd$spectrum_id_[nrow(spd)]
+    } else {
+        index
+    }
 }
 
 #' Similar to `.insert_from_spectra()` but driven by a chunk factor and
@@ -369,6 +400,7 @@ mzMLToParquet <- function(
 .set_backend_insert_data <- function(object, f = NULL, path,
                                      partitioning = character(),
                                      compression = .DEFAULT_COMPRESSION,
+                                     row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                                      ...) {
     if (is.null(f) || !length(f))
         f <- rep(1L, length(object))
@@ -380,19 +412,23 @@ mzMLToParquet <- function(
         stop("Destination '", path, "' already contains a dataset.",
              call. = FALSE)
     if (!dir.exists(path)) dir.create(path, recursive = TRUE)
+    .invalidate_dataset_cache(path)
     next_id <- 0L
     for (l in levels(f)) {
         sub <- Spectra::Spectra(object@backend[f == l])
         next_id <- .insert_from_spectra(
             path, sub, index = next_id,
-            partitioning = partitioning, compression = compression)
+            partitioning = partitioning, compression = compression,
+            row_group_size = row_group_size)
         rm(sub); gc(verbose = FALSE)
     }
     .write_meta(path, partitioning = partitioning)
     invisible(path)
 }
 
-## ----- utilities ----------------------------------------------------------
+# ------------------------------------------------------------------------------
+# Utilities
+# ------------------------------------------------------------------------------
 
 #' Drop columns that are entirely `NA`, except those listed in `keep`.
 #'
@@ -407,41 +443,51 @@ mzMLToParquet <- function(
     if (any(is_all_na)) x[, !is_all_na, drop = FALSE] else x
 }
 
-## Recognised input extensions (case-insensitive). `mzR`/`MsBackendMzR`
-## supports mzML, mzXML and netCDF.
+# Recognised input extensions (case-insensitive).
 .MS_INPUT_EXTENSIONS <- c("mzml", "mzxml", "cdf", "nc")
 
-#' Validate that all paths exist and have a supported MS file extension.
+#' Validate that all paths exist and, where they carry an extension, that it
+#' is a supported one.
+#'
+#' Files without any extension are accepted: `ExperimentHub` / `MsDataHub`
+#' hand out cache paths such as `<hash>_7861` with the extension stripped, and
+#' `mzR::openMSfile()` sniffs the content rather than trusting the name. Only
+#' an extension that is present *and* unrecognised is an error.
 #'
 #' @noRd
 .check_ms_files <- function(files) {
     missing_files <- files[!file.exists(files)]
-    if (length(missing_files))
+    if (length(missing_files)) {
         stop("The following input file(s) do not exist: ",
              paste0("'", missing_files, "'", collapse = ", "),
              call. = FALSE)
+    }
     ext <- tolower(tools::file_ext(files))
+    ext <- ext[nzchar(ext)]
     bad <- ext[!ext %in% .MS_INPUT_EXTENSIONS]
-    if (length(bad))
+    if (length(bad)) {
         stop("Unsupported file extension(s): ",
              paste0("'.", unique(bad), "'", collapse = ", "),
              ". Expected one of: ",
              paste0(".", .MS_INPUT_EXTENSIONS, collapse = ", "),
              ".", call. = FALSE)
+    }
     invisible(TRUE)
 }
 
-## ----- streaming mzR engine -----------------------------------------------
+# ------------------------------------------------------------------------------
+# Streaming mzR engine
+# ------------------------------------------------------------------------------
 
-## Mapping from mzR `header()` column names to Spectra canonical
-## spectra variable names. Columns not listed here are passed through
-## as-is when they survive the all-NA filter; columns named on the
-## right that don't appear in the header are filled with NA later.
-##
-## `isolationWindowLowerOffset` / `isolationWindowUpperOffset` are
-## handled separately: we convert them into
-## `isolationWindowLowerMz` / `isolationWindowUpperMz` using the
-## target m/z, matching the convention used by `MsBackendMzR`.
+# Mapping from mzR `header()` column names to Spectra canonical
+# spectra variable names. Columns not listed here are passed through
+# as-is when they survive the all-NA filter; columns named on the
+# right that don't appear in the header are filled with NA later.
+#
+# `isolationWindowLowerOffset` / `isolationWindowUpperOffset` are
+# handled separately: we convert them into
+# `isolationWindowLowerMz` / `isolationWindowUpperMz` using the
+# target m/z, matching the convention used by `MsBackendMzR`.
 .MZR_HEADER_RENAME <- c(
     seqNum = "acquisitionNum",
     acquisitionNum = "acquisitionNum",
@@ -496,9 +542,12 @@ mzMLToParquet <- function(
         hdr$isolationWindowUpperOffset <- NULL
     }
 
-    if ("centroided" %in% colnames(hdr) && !is.logical(hdr$centroided))
+    if ("centroided" %in% colnames(hdr) && !is.logical(hdr$centroided)) {
         hdr$centroided <- as.logical(hdr$centroided)
-    if ("peaksCount" %in% colnames(hdr)) hdr$peaksCount <- NULL
+    }
+    if ("peaksCount" %in% colnames(hdr)) {
+        hdr$peaksCount <- NULL
+    }
 
     .drop_all_na_columns(
         hdr,
@@ -530,20 +579,27 @@ mzMLToParquet <- function(
                                     batch_size = 1000L,
                                     partitioning = character(),
                                     compression = .DEFAULT_COMPRESSION,
+                                    row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                                     starting_id = 0L) {
-    if (!requireNamespace("mzR", quietly = TRUE))
+    if (!requireNamespace("mzR", quietly = TRUE)) {
         stop("Package 'mzR' is required for engine = \"mzr\". Install ",
              "it with `BiocManager::install(\"mzR\")`.", call. = FALSE)
+    }
     sp <- .spectra_path(path)
-    if (!dir.exists(sp)) dir.create(sp, recursive = TRUE)
+    if (!dir.exists(sp)) {
+        dir.create(sp, recursive = TRUE)
+    }
     batch_size <- max(1L, as.integer(batch_size))
+    row_group_size <- max(1L, as.integer(row_group_size))
     next_id <- as.integer(starting_id)
     for (f in files) {
         next_id <- .stream_one_file(
             path = path, file = f, batch_size = batch_size,
             partitioning = partitioning, compression = compression,
+            row_group_size = row_group_size,
             starting_id = next_id)
     }
+    .invalidate_dataset_cache(path)
     invisible(next_id)
 }
 
@@ -551,13 +607,17 @@ mzMLToParquet <- function(
 #'
 #' @noRd
 .stream_one_file <- function(path, file, batch_size,
-                             partitioning, compression, starting_id) {
+                             partitioning, compression,
+                             row_group_size = .DEFAULT_ROW_GROUP_SIZE,
+                             starting_id) {
     file_abs <- normalizePath(file, mustWork = TRUE)
     ms <- mzR::openMSfile(file_abs)
     on.exit(try(mzR::close(ms), silent = TRUE), add = TRUE)
     hdr <- mzR::header(ms)
     n <- nrow(hdr)
-    if (!n) return(invisible(starting_id))
+    if (!n) {
+        return(invisible(starting_id))
+    }
     sd <- .mzr_header_to_spectra_df(hdr)
     sd$dataOrigin <- file_abs
     sd$dataStorage <- path
@@ -589,6 +649,7 @@ mzMLToParquet <- function(
             .write_batch_dataset(
                 batch_df, path = path, partitioning = partitioning,
                 compression = compression,
+                row_group_size = row_group_size,
                 basename = paste0("part-", file_token, "-",
                                   formatC(b, width = 5, flag = "0"),
                                   "-{i}.parquet"))
@@ -602,11 +663,13 @@ mzMLToParquet <- function(
                 writer <- arrow::ParquetFileWriter$create(
                     schema = schema, sink = sink,
                     properties = arrow::ParquetWriterProperties$create(
+                        column_names = names(tbl),
                         compression = compression))
             } else {
                 tbl <- tbl$cast(schema)
             }
-            writer$WriteTable(tbl)
+            writer$WriteTable(tbl,
+                              chunk_size = min(row_group_size, tbl$num_rows))
         }
     }
     if (!is.null(writer)) {
@@ -636,12 +699,15 @@ mzMLToParquet <- function(
 #'
 #' @noRd
 .write_batch_dataset <- function(batch_df, path, partitioning,
-                                 compression, basename) {
+                                 compression,
+                                 row_group_size = .DEFAULT_ROW_GROUP_SIZE,
+                                 basename) {
     tbl <- arrow::as_arrow_table(batch_df)
     arrow::write_dataset(
         tbl, path = .spectra_path(path), format = "parquet",
         partitioning = partitioning,
         compression = compression,
+        max_rows_per_group = max(1L, as.integer(row_group_size)),
         basename_template = basename,
-        existing_data_behavior = "overwrite_or_ignore")
+        existing_data_behavior = "overwrite")
 }
