@@ -56,3 +56,5 @@ rsconnect/
 *.dylib
 src/*.o
 src/*.so
+/doc/
+/Meta/

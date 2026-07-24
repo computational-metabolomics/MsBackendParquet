@@ -11,3 +11,5 @@
 ^CRAN-RELEASE$
 ^\.positai$
 ^\.claude$
+^doc$
+^Meta$

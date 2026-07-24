@@ -1,8 +1,5 @@
 ---
 title: "Apache Parquet-based Mass Spectrometry Data Backend"
-author:
-- name: Ossama Edbali
-package: MsBackendParquet
 output:
   BiocStyle::html_document:
     toc_float: true
@@ -10,23 +7,37 @@ vignette: >
   %\VignetteIndexEntry{Apache Parquet-based Mass Spectrometry Data Backend}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
+  %\VignettePackage{MsBackendParquet}
 ---
 
 ```{r style, echo = FALSE, results = "asis", message = FALSE}
 BiocStyle::markdown()
 ```
 
+**Package**: `r Biocpkg("MsBackendParquet")`<br />
+**Authors**: `r packageDescription("MsBackendParquet")[["Author"]] `<br />
+**Compiled**: `r date()`
+
 ```{r setup, include = FALSE}
 knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+library(BiocStyle)
 ```
 
 # Introduction
 
 The `r Biocpkg("MsBackendParquet")` package provides a backend for
 `r Biocpkg("Spectra")` objects that stores mass spectrometry (MS) data
-in an on-disk [Apache Parquet](https://parquet.apache.org/) dataset,
-accessed through the [Apache Arrow](https://arrow.apache.org/docs/r) R
-bindings.
+in an on-disk [Apache Parquet](https://parquet.apache.org/) dataset.
+Datasets are *written* with the
+[Apache Arrow](https://arrow.apache.org/docs/r) R bindings and *queried*
+with [DuckDB](https://duckdb.org/), keeping the spectra metadata
+together with the `mz`/`intensity` peak values in a columnar format that
+supports compression, dictionary encoding and Hive-style partitioning.
+
+To keep access fast, the (small) non-peak spectra variables are held in
+a bounded in-memory index while the peak data is read from disk on
+demand. As a result, metadata filters cost about as much as with an
+in-memory backend, while the bulk peak storage stays out of core.
 
 The backend extends `MsBackendCached` from `r Biocpkg("Spectra")` so it
 benefits from caching of user-defined spectra variables while keeping
@@ -34,23 +45,35 @@ the on-disk dataset read-only.
 
 # Creating a Parquet dataset
 
-A Parquet dataset can be created from raw MS data files (mzML, mzXML,
-netCDF) via `createMsBackendParquetDataset()`:
+The quickest way to turn raw MS data files (mzML, mzXML, netCDF) into a
+Parquet dataset is the `mzMLToParquet()` helper. It validates the input
+files, writes the dataset and returns an initialised backend ready to be
+wrapped in a `Spectra` object:
 
 ```{r, eval = FALSE}
 library(Spectra)
 library(MsBackendParquet)
 
 files <- c("sample-1.mzML", "sample-2.mzML")
-path  <- tempfile()
+be <- mzMLToParquet(files, path = tempfile(), partitioning = "dataOrigin")
+sps <- Spectra(be)
+```
+
+For more control (a custom reader backend, chunk sizes, compression
+codec, Parquet row-group size, or writing an existing `DataFrame`), call
+`createMsBackendParquetDataset()` directly:
+
+```{r, eval = FALSE}
+path <- tempfile()
 createMsBackendParquetDataset(path = path, x = files,
                               partitioning = "dataOrigin",
                               compression = "snappy")
+be <- backendInitialize(MsBackendParquet(), path = path)
 ```
 
-The function imports MS data via `MsBackendMzR()` by default and
-writes spectra metadata together with the `mz`/`intensity` values as
-Parquet `list<double>` columns.
+Both functions import MS data via `MsBackendMzR()` by default and write
+spectra metadata together with the `mz`/`intensity` values as Parquet
+`list<double>` columns.
 
 For the rest of the vignette we work with a small in-memory data set
 so the document can be built without external files:
@@ -76,7 +99,7 @@ be
 
 # Accessing data
 
-`spectraData()`, `peaksData()`, `mz()`, `intensity()` and friends work
+`spectraData()`, `peaksData()`, `mz()`, `intensity()` and related work
 the same way as for any other `MsBackend`:
 
 ```{r access}
@@ -85,16 +108,76 @@ peaksData(be)[1:2]
 mz(be)
 ```
 
-# Filtering with Arrow predicate push-down
+# Filtering with DuckDB predicate push-down
 
-Filter methods are implemented as `dplyr` lazy queries on the open
-dataset and benefit from Arrow's predicate push-down:
+Filter methods are translated into DuckDB SQL predicates that are pushed
+down to the Parquet scan. DuckDB prunes whole row groups using their
+min/max statistics (and skips whole partitions for Hive-partitioned
+datasets), so a range or set filter reads only the data it needs. When
+the filter column is held in the in-memory metadata index (see below),
+the predicate is evaluated in memory instead:
 
 ```{r filtering}
 filterMsLevel(be, 1L)
 filterRt(be, c(1.5, 2.5))
 filterDataOrigin(be, "file-b")
+filterPrecursorMzRange(be, c(110, 111))
+filterPrecursorMzValues(be, 110.5, ppm = 20)
 ```
+
+Chained filters combine into a single scan, and a subsequent
+`peaksData()` call reuses the same predicate to prune the peak data it
+reads.
+
+# The in-memory metadata cache
+
+The non-peak spectra variables are typically small compared to the peak
+data, so `MsBackendParquet` keeps them in a bounded, read-through
+in-memory index. The cache is held at the package level, keyed by
+dataset path and shared by every backend over that dataset (so it is
+independent of the individual, serialisable backend objects). It is
+warmed on `backendInitialize()` and dropped automatically whenever the
+dataset on disk is (re-)written. It is entirely separate from the
+user-modified variables tracked by `MsBackendCached`, which always take
+precedence.
+
+The cache is controlled through three options (shown with their
+defaults):
+
+```{r, eval = FALSE}
+# Enable ("auto", the default) or disable ("off") the metadata cache.
+options(MsBackendParquet.cacheMetadata = "auto")
+
+# Columns held by default (the ones the optimised filters need).
+options(MsBackendParquet.cacheColumns =
+            c("msLevel", "rtime", "precursorMz", "dataOrigin"))
+
+# Budget in cells (rows x columns); ~5e7 is roughly 400 MB of doubles.
+# Requests over budget quietly fall back to reading from disk.
+options(MsBackendParquet.cacheMaxCells = 5e7)
+```
+
+Two further options tune the underlying DuckDB session:
+`MsBackendParquet.threads` (maps to DuckDB's `threads`) and
+`MsBackendParquet.memoryLimit` (maps to `memory_limit`). Both default to
+DuckDB's own defaults when unset.
+
+# Performance
+
+Storing the peaks as columnar `list<double>` values lets DuckDB skip
+whole row groups when a query touches only part of the data, while
+projection and predicate push-down keep both the columns and rows read
+to a minimum. Combined with the in-memory metadata index, this makes
+metadata filters roughly as fast as an in-memory backend while the peak
+storage stays on disk.
+
+Across the SpectraQL query suite over 76,020 spectra (10 mzML files),
+the Parquet backend is the fastest of the on-disk `Spectra` backends on
+5 of 7 queries. For example, MS1 peak retrieval takes about 95 ms versus
+roughly 560 ms for the `mzR` backend. The benchmark scripts live in
+[`inst/benchmarks/`](https://github.com/computational-metabolomics/MsBackendParquet/tree/main/inst/benchmarks);
+see `inst/benchmarks/performance.md` for the full numbers and the design
+considerations behind them.
 
 # Streaming large mzML files
 
