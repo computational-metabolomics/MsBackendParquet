@@ -175,20 +175,23 @@ Measured on macOS x86_64, R 4.6.0, duckdb 1.5.2, arrow 24.0.0, 12 threads, with
 [`MsDataHub::PestMix1_DDA.mzML()`](https://bioconductor.org/packages/MsDataHub/). Reproduce with the two scripts in this
 directory.
 
-End-to-end [SpectraQL](https://github.com/RforMassSpectrometry/SpectraQL) suite, 10 samples / 76,020 spectra
+End-to-end [SpectraQL](https://github.com/RforMassSpectrometry/SpectraQL) suite, 50 samples / 380,100 spectra
 (`benchmark-spectraql-multifile.R`; medians in ms, lower is better):
 
 | query | parquet | mzr | hdf5 | sql |
 |---|---|---|---|---|
-| `rt_range` | 3.73 | 5.25 | 9.25 | 144.83 |
-| `rt_narrow` | 7.45 | 4.01 | 6.73 | 81.79 |
-| `precursor_ppm` | 6.97 | 11.31 | 12.65 | 100.29 |
-| `rt_and_precursor` | 6.15 | 9.79 | 16.70 | 114.56 |
-| `ms1_peaks` | 94.53 | 558.41 | 732.94 | 196.09 |
-| `ms1_tic` | 101.48 | 623.76 | 661.75 | 286.35 |
-| `scaninfo` | 13.82 | 11.75 | 11.24 | 273.69 |
+| `rt_range` | 12.24 | 15.44 | 24.05 | 380.19 |
+| `rt_narrow` | 11.23 | 5.33 | 14.76 | 348.17 |
+| `precursor_ppm` | 14.09 | 21.66 | 28.66 | 336.33 |
+| `rt_and_precursor` | 12.56 | 17.25 | 27.75 | 389.22 |
+| `ms1_peaks` | 314.82 | 1510 | 1440 | 919.04 |
+| `ms1_tic` | 506.79 | 1390 | 1490 | 890.82 |
+| `scaninfo` | 26.09 | 17.27 | 22.30 | 718.91 |
 
-Parquet leads 5 of the 7 queries; the two it doesn't win it loses by 2–3 ms.
+Parquet leads 5 of the 7 queries. It loses only the narrow-RT and scan-info
+metadata filters to the in-memory `mzr` backend (by under 10 ms), while winning
+the peak-data pulls (`ms1_peaks`, `ms1_tic`) by roughly 3–5x — the regime the
+on-disk columnar layout is built for.
 
 Per-operation medians at 76,020 spectra (`microbench.R`; medians in ms):
 
@@ -211,4 +214,41 @@ Reproduce:
 ```sh
 Rscript inst/benchmarks/benchmark-spectraql-multifile.R # end-to-end suite
 Rscript inst/benchmarks/microbench.R # per-operation
+Rscript inst/benchmarks/benchmark-sweeps.R # config sweeps + figures
 ```
+
+## Configuration sweeps
+
+`benchmark-sweeps.R` holds the backend fixed and varies its tunables one axis at a
+time, to show how query latency and on-disk size respond. The two runtime options
+are swept at the full 50-sample scale; the two dataset-creation params, which force
+a rewrite per value, at 10 samples.
+
+![Runtime-config sweeps: DuckDB threads and the metadata cache](figures/sweeps-runtime.png)
+
+- **DuckDB threads** (`MsBackendParquet.threads`). Peak-data queries parallelise:
+  `ms1_peaks` falls from ~1130 ms on one thread to ~340 ms on eight, and `ms1_tic`
+  from ~1190 ms to ~700 ms, with diminishing returns past eight threads on this
+  12-core machine (`ms1_peaks` even regresses slightly at twelve). Metadata filters
+  stay flat (~11 ms): they are answered from the in-memory index rather than the
+  DuckDB scan, so thread count does not touch them.
+- **Metadata cache** (`MsBackendParquet.cacheMetadata`). With the index on
+  (`"auto"`) the metadata filters run ~2.3–2.9x faster than the SQL path (`rt_range`
+  11.4 vs 26.7 ms, `precursor_ppm` 13.3 vs 38.9 ms); even `ms1_peaks` improves (356
+  vs 653 ms), because its RT predicate is resolved from the index before any peak
+  data is read.
+
+![Storage-config sweeps: row-group size and compression codec](figures/sweeps-storage.png)
+
+- **Row-group size** (`row_group_size`). Larger groups compress marginally better
+  (188 MB at 50 spectra down to 169 MB at 1000+), but peak-read latency is lowest
+  around the default of 250 (64 ms) and degrades at both extremes (88 ms at 50, 82
+  ms at 5000). The default trades a few MB of size for the best narrow-range read.
+- **Compression codec** (`compression`). The codecs trade read speed for size:
+  `gzip`/`zstd` are smallest (133 / 140 MB) but slowest to read (81 / 78 ms); `lz4`
+  reads fastest (55 ms) at a moderate 174 MB; `snappy` (the default) sits in the
+  middle (179 MB / 69 ms); `uncompressed` is largest (230 MB) with no read-speed
+  edge over `lz4`.
+
+The figures are regenerated into `inst/benchmarks/figures/`; the raw per-run tables
+are written to `inst/benchmarks/results/` (not shipped).

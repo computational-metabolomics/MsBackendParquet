@@ -58,3 +58,6 @@ src/*.o
 src/*.so
 /doc/
 /Meta/
+
+# Generated benchmark artifacts (raw per-run sweep tables; figures/ is committed)
+inst/benchmarks/results/

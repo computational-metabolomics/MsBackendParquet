@@ -9,17 +9,17 @@
 ## same 7-query SpectraQL suite against every backend built from those
 ## files.
 ##
-## At N_SAMPLES = 10 (76,020 spectra) Parquet now leads 5 of the 7 queries.
-## Measured 2026-07-22, medians in ms:
+## At N_SAMPLES = 50 (380,100 spectra) Parquet leads 5 of the 7 queries.
+## Measured 2026-07-25, medians in ms:
 ##
-##            query   parquet    mzr   hdf5     sql
-##         rt_range      3.73   5.25   9.25   144.8
-##        rt_narrow      7.45   4.01   6.73    81.8
-##    precursor_ppm      6.97  11.31  12.65   100.3
-## rt_and_precursor      6.15   9.79  16.70   114.6
-##        ms1_peaks     94.53 558.41 732.94   196.1
-##          ms1_tic    101.48 623.76 661.75   286.4
-##         scaninfo     13.82  11.75  11.24   273.7
+##            query   parquet     mzr    hdf5     sql
+##         rt_range     12.24   15.44   24.05  380.19
+##        rt_narrow     11.23    5.33   14.76  348.17
+##    precursor_ppm     14.09   21.66   28.66  336.33
+## rt_and_precursor     12.56   17.25   27.75  389.22
+##        ms1_peaks    314.82 1510.00 1440.00  919.04
+##          ms1_tic    506.79 1390.00 1490.00  890.82
+##         scaninfo     26.09   17.27   22.30  718.91
 ##
 ## The metadata-only filters are competitive because the backend keeps the
 ## non-peak columns in an in-memory index -- see R/metadata-cache.R -- just as
@@ -39,7 +39,7 @@
 ##
 ##   Rscript inst/benchmarks/benchmark-spectraql-multifile.R
 
-N_SAMPLES <- 10L
+N_SAMPLES <- 50L
 
 required <- c("bench", "SpectraQL", "MsDataHub", "Spectra", "devtools",
               "dplyr", "rlang")
@@ -170,8 +170,8 @@ construction <- data.frame(
 print(construction, row.names = FALSE)
 
 ## Sanity: all backends should return the same number of spectra
-## for a deterministic predicate. At N_SAMPLES = 10 we expect
-## 717 * 10 == 7170.
+## for a deterministic predicate. At N_SAMPLES = 50 we expect
+## 717 * 50 == 35850.
 sanity_q <- "QUERY * WHERE RTMIN = 200 AND RTMAX = 300"
 sanity_n <- vapply(backends, function(s) length(query(s, sanity_q)),
                    integer(1L))

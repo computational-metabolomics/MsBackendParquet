@@ -17,7 +17,7 @@
 ##   Rscript inst/benchmarks/microbench.R
 ##   N_SAMPLES=1,10,50 LABEL=nothreads Rscript inst/benchmarks/microbench.R
 
-N_SAMPLES <- as.integer(strsplit(Sys.getenv("N_SAMPLES", "1,10"), ",")[[1L]])
+N_SAMPLES <- as.integer(strsplit(Sys.getenv("N_SAMPLES", "1,10,50"), ",")[[1L]])
 LABEL <- Sys.getenv("LABEL", "current")
 ITER <- as.integer(Sys.getenv("ITER", "10"))
 
