@@ -29,19 +29,19 @@ backend:
 
 ### Performance
 
-Against the other on-disk `Spectra` backends over 76,020 spectra (10 mzML
+Against the other on-disk `Spectra` backends over 380,100 spectra (50 mzML
 files), running the SpectraQL query suite in
 [`inst/benchmarks/`](inst/benchmarks/). Medians in ms, lower is better:
 
 | query | parquet | mzR | HDF5 | SQL |
 |---|---|---|---|---|
-| `RTMIN/RTMAX` range | **3.7** | 5.3 | 9.3 | 144.8 |
-| narrow RT range | 7.5 | **4.0** | 6.7 | 81.8 |
-| precursor m/z ± ppm | **7.0** | 11.3 | 12.7 | 100.3 |
-| RT and precursor | **6.2** | 9.8 | 16.7 | 114.6 |
-| MS1 peak data | **94.5** | 558.4 | 732.9 | 196.1 |
-| MS1 TIC | **101.5** | 623.8 | 661.8 | 286.4 |
-| scan info | 13.8 | 11.8 | **11.2** | 273.7 |
+| `RTMIN/RTMAX` range | **12.24** | 15.44 | 24.05 | 380.19 |
+| narrow RT range | 11.23 | **5.33** | 14.76 | 348.17 |
+| precursor m/z ± ppm | **14.09** | 21.66 | 28.66 | 336.33 |
+| RT and precursor | **12.56** | 17.25 | 27.75 | 389.22 |
+| MS1 peak data | **314.82** | 1510 | 1440 | 919.04 |
+| MS1 TIC | **506.79** | 1390 | 1490 | 890.82 |
+| scan info | 26.09 | **17.27** | 22.30 | 718.91 |
 
 Reproduce with `Rscript inst/benchmarks/benchmark-spectraql-multifile.R`. See
 [`inst/benchmarks/performance.md`](inst/benchmarks/performance.md) for the design
