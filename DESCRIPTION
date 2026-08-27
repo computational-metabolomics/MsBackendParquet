@@ -47,6 +47,7 @@ Suggests:
     MsDataHub,
     mzR,
     rmarkdown,
+    SpectraQL,
     testthat (>= 3.0.0)
 URL: https://github.com/ossedb/MsBackendParquet
 BugReports: https://github.com/ossedb/MsBackendParquet/issues
