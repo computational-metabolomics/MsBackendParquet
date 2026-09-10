@@ -101,12 +101,15 @@ createMsBackendParquetDataset <- function(
     row_group_size = .DEFAULT_ROW_GROUP_SIZE) {
 
     engine <- match.arg(engine)
+    # Hive partitioning keys are given as `Spectra` names but the files are
+    # written with mzPeak column names, so translate the keys to match.
+    partitioning <- .encode_var_names(partitioning)
     if (!length(path) || !nzchar(path)) {
         stop("'path' is required.", call. = FALSE)
     }
     path <- normalizePath(path, mustWork = FALSE)
     if (.is_parquet_dataset(path)) {
-        stop("A MsBackendParquet dataset already exists at '", path, "'.",
+        stop("An mzStack dataset already exists at '", path, "'.",
              call. = FALSE)
     }
     if (!dir.exists(path)) {
@@ -123,7 +126,8 @@ createMsBackendParquetDataset <- function(
         .write_from_spectra_data(path, data, partitioning = partitioning,
                                  compression = compression,
                                  row_group_size = row_group_size)
-        .write_meta(path, partitioning = partitioning)
+        .manifest_write_native(path, .dataset_n_spectra(path),
+                               partitioning = partitioning)
         return(invisible(path))
     }
 
@@ -139,7 +143,8 @@ createMsBackendParquetDataset <- function(
             partitioning = partitioning,
             compression = compression,
             row_group_size = row_group_size)
-        .write_meta(path, partitioning = partitioning)
+        .manifest_write_native(path, .dataset_n_spectra(path),
+                               partitioning = partitioning)
         return(invisible(path))
     }
 
@@ -158,7 +163,8 @@ createMsBackendParquetDataset <- function(
             row_group_size = row_group_size)
         rm(sps); gc(verbose = FALSE)
     }
-    .write_meta(path, partitioning = partitioning)
+    .manifest_write_native(path, .dataset_n_spectra(path),
+                           partitioning = partitioning)
     invisible(path)
 }
 
@@ -271,7 +277,7 @@ mzMLToParquet <- function(
 
     if (.is_parquet_dataset(path)) {
         if (!isTRUE(overwrite)) {
-            stop("A MsBackendParquet dataset already exists at '", path,
+            stop("An mzStack dataset already exists at '", path,
                  "'. Pass 'overwrite = TRUE' to replace it.",
                  call. = FALSE)
         }
@@ -343,10 +349,11 @@ mzMLToParquet <- function(
     if (!"rtime" %in% colnames(data)) data$rtime <- NA_real_
     if (!"precursorMz" %in% colnames(data)) data$precursorMz <- NA_real_
     if (!"dataOrigin" %in% colnames(data))
-        data$dataOrigin <- "<MsBackendParquet>"
-    if (!"dataStorage" %in% colnames(data))
-        data$dataStorage <- path
+        data$dataOrigin <- "<mzStack>"
     data$spectrum_id_ <- seq_len(n)
+    # Store mzPeak's column vocabulary and value encodings on disk; the
+    # DuckDB view translates back to `Spectra` names on read.
+    data <- .spectra_df_to_mzpeak(data)
     peaks <- lapply(seq_len(n), function(i) {
         m <- if (is.null(mzs[[i]])) numeric() else as.numeric(mzs[[i]])
         ii <- if (is.null(ints[[i]])) numeric() else as.numeric(ints[[i]])
@@ -376,9 +383,9 @@ mzMLToParquet <- function(
     spd <- as.data.frame(Spectra::spectraData(sps, columns = sv))
     if (nrow(spd)) {
         spd$spectrum_id_ <- seq.int(index + 1L, index + nrow(spd))
-        if (!"dataStorage" %in% colnames(spd)) {
-            spd$dataStorage <- path
-        }
+        # Store mzPeak's column vocabulary on disk (see the read view in
+        # `R/column-map.R`); `dataStorage` is supplied by that view.
+        spd <- .spectra_df_to_mzpeak(spd)
     }
     peaks <- Spectra::peaksData(sps, columns = c("mz", "intensity"))
     .write_spectra_chunk(path, spd, peaks,
@@ -402,6 +409,7 @@ mzMLToParquet <- function(
                                      compression = .DEFAULT_COMPRESSION,
                                      row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                                      ...) {
+    partitioning <- .encode_var_names(partitioning)
     if (is.null(f) || !length(f))
         f <- rep(1L, length(object))
     if (!is.factor(f))
@@ -422,7 +430,8 @@ mzMLToParquet <- function(
             row_group_size = row_group_size)
         rm(sub); gc(verbose = FALSE)
     }
-    .write_meta(path, partitioning = partitioning)
+    .manifest_write_native(path, .dataset_n_spectra(path),
+                           partitioning = partitioning)
     invisible(path)
 }
 
@@ -620,8 +629,10 @@ mzMLToParquet <- function(
     }
     sd <- .mzr_header_to_spectra_df(hdr)
     sd$dataOrigin <- file_abs
-    sd$dataStorage <- path
     sd$spectrum_id_ <- seq.int(starting_id + 1L, starting_id + n)
+    # Store mzPeak's column vocabulary and value encodings on disk; the
+    # DuckDB view translates back to `Spectra` names on read.
+    sd <- .spectra_df_to_mzpeak(sd)
 
     file_token <- paste0(format(Sys.time(), "%H%M%S"), "-",
                          paste(sample(c(letters, 0:9), 6, TRUE),

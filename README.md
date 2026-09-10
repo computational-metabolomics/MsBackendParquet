@@ -25,7 +25,12 @@ backend:
   efficient access patterns;
 - stores only a file system path inside the backend object, so
   `MsBackendParquet` instances are fully serialisable and parallel-
-  processing friendly.
+  processing friendly;
+- implements the **mzStack** manifest format (work in progress), which covers
+  two kinds of run under one dataset: mzML converted natively, and
+  [mzPeak](https://github.com/HUPO-PSI/mzPeak) archives referenced where they
+  already are. Both store mzPeak's column vocabulary on disk, so either can be
+  exported back to an archive mechanically.
 
 ### Performance
 
@@ -46,6 +51,13 @@ files), running the SpectraQL query suite in
 Reproduce with `Rscript inst/benchmarks/benchmark-spectraql-multifile.R`. See
 [`inst/benchmarks/performance.md`](inst/benchmarks/performance.md) for the design
 considerations behind these numbers.
+
+`Rscript inst/benchmarks/benchmark-mzpeak.R` covers the mzPeak path on a
+synthetic fixture of 20 archives / 10,000 spectra / 5,000,000 points. Ingest
+reads metadata only and writes a derived index of 3.4% of the archive size;
+metadata filters are answered from it in about a millisecond; and an m/z-ordered
+projection makes `filterContainsMz()` **8.3x** faster than searching the
+archives (331 to 40 ms), for the same answer.
 
 The in-memory index is on by default and bounded; set
 `options(MsBackendParquet.cacheMetadata = "off")` to disable it, or
@@ -94,6 +106,29 @@ be <- mzMLToParquet(files, path = tempfile(),
 
 `engine = "mzr"` requires the `mzR` package and processes files
 serially.
+
+### Querying mzPeak archives
+
+An mzPeak archive holds one MS run, which makes a question spanning a thousand
+runs awkward. `createMzPeakDataset()` registers a collection of them as a single
+queryable dataset:
+
+```r
+path <- tempfile()
+createMzPeakDataset(c("QC01.mzpeak", "QC02.mzpeak"), path = path)
+
+be <- backendInitialize(MsBackendParquet(), path = path)
+hits <- filterContainsMz(be, 278.093, ppm = 20)
+
+buildProjection(path)   # optional m/z-ordered copy; makes that search fast
+```
+
+The archives are neither modified nor copied — only a small index of their
+spectrum metadata is written, and peaks are read from the archives on demand, so
+they stay readable by every other mzPeak tool. `filterContainsMz()` runs the
+peak search inside the storage engine; `buildProjection()` adds a droppable
+m/z-ordered copy of the signal that speeds it up without changing its result.
+See the vignette for the detail.
 
 ## Contributions
 
