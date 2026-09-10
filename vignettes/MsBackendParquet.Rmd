@@ -27,12 +27,23 @@ library(BiocStyle)
 
 The `r Biocpkg("MsBackendParquet")` package provides a backend for
 `r Biocpkg("Spectra")` objects that stores mass spectrometry (MS) data
-in an on-disk [Apache Parquet](https://parquet.apache.org/) dataset.
+in an on-disk **mzStack** dataset, built on
+[Apache Parquet](https://parquet.apache.org/).
 Datasets are *written* with the
 [Apache Arrow](https://arrow.apache.org/docs/r) R bindings and *queried*
 with [DuckDB](https://duckdb.org/), keeping the spectra metadata
 together with the `mz`/`intensity` peak values in a columnar format that
 supports compression, dictionary encoding and Hive-style partitioning.
+
+An mzStack dataset is a directory identified by an `mzStack.json`
+manifest, holding one or more *runs*. A run is either `native` — converted
+from raw MS data files, with peaks stored alongside the metadata — or
+`mzpeak`, an index over external
+[HUPO-PSI mzPeak](https://github.com/HUPO-PSI/mzPeak) archives that are
+read where they are and never modified (see
+*Querying collections of mzPeak archives* below). The manifest records
+which kind each run is, so the two never have to be told apart by
+inspecting the directory.
 
 To keep access fast, the (small) non-peak spectra variables are held in
 a bounded in-memory index while the peak data is read from disk on
@@ -327,6 +338,107 @@ The benchmark scripts live in
 see `inst/benchmarks/performance.md` for the full numbers, the
 configuration sweeps over the tunable options, and the design
 considerations behind them.
+
+# Querying collections of mzPeak archives
+
+[mzPeak](https://github.com/HUPO-PSI/mzPeak) is the HUPO-PSI successor to
+mzML. An mzPeak *archive* holds **one MS run** as a folder (or an
+uncompressed ZIP) of Parquet files plus a JSON manifest naming them. That
+shape is excellent for distributing and archiving a run, and awkward when
+the question spans a thousand runs at once — answering it would mean opening
+a thousand archives and parsing a thousand manifests.
+
+`MsBackendParquet` bridges the two. `createMzPeakDataset()` registers a set
+of archives as one dataset:
+
+```{r, eval = FALSE}
+library(Spectra)
+library(MsBackendParquet)
+
+path <- tempfile()
+createMzPeakDataset(c("QC01.mzpeak", "QC02.mzpeak"), path = path)
+
+be <- backendInitialize(MsBackendParquet(), path = path)
+sps <- Spectra(be)
+```
+
+**The archives are neither modified nor copied.** Ingest reads each
+archive's manifest, its spectrum metadata table and its scan / precursor /
+selected-ion side tables, and writes a small derived index next to them —
+around 3% of the size of the archives. It never reads a byte of signal data,
+so the cost scales with the number of spectra rather than the size of the
+data. Peaks are then read from the archives themselves, on demand.
+
+Because the archives stay exactly as they were, they remain readable by
+every other mzPeak tool, and exporting a run back out of the dataset is a
+directory copy rather than a conversion.
+
+## What the dataset does with mzPeak's model
+
+A few things are translated on the way in, and it is worth knowing which:
+
+- **Units and names.** mzPeak stores retention time as `time` in *minutes*;
+  `Spectra` expects `rtime` in *seconds*. The conversion, and every other
+  column rename and re-encoding (`scan_polarity` ±1, `spectrum_representation`
+  as a CURIE, the isolation window as a target plus offsets, ...), happens in
+  a single SQL view. The same view serves a natively converted dataset: its
+  `spectra/` files are written with mzPeak's column names and encodings too,
+  so both kinds are directly comparable and either can be exported back to an
+  archive mechanically. `spectrum_index` is always the dataset's unique
+  0-based key; a spectrum's position within its source file (`scanIndex`,
+  which restarts per file) is kept in `scan_index`. The package adds only a
+  handful of reserved columns (`spectrum_id_`, `acquisition_num_`, the `n_*`
+  counts).
+- **Flattening.** mzPeak keeps scans, precursors and selected ions in
+  separate tables linked back to the spectrum by a foreign key. The index
+  takes the first of each, and records how many there were in `n_scans`,
+  `n_selected_ions` and `n_precursors`. Nothing is lost — the archive still
+  holds the full detail — but a spectrum with several scans is summarised in
+  the index.
+- **Profile and centroid.** mzPeak can hold both representations of the same
+  spectrum, in separate files. Choose with `representation`:
+
+```{r, eval = FALSE}
+be <- backendInitialize(MsBackendParquet(), path = path,
+                        representation = "centroid")
+```
+
+- **Differing schemas.** Two perfectly valid archives often have different
+  columns, because writers are encouraged to promote whichever parameters
+  they have into columns. They still combine into one queryable dataset;
+  columns missing from an archive read as `NA`.
+
+Archives that use mzPeak's *chunked* signal layout are rejected with a clear
+message; only the *point* layout is supported so far.
+
+## Searching for peaks across runs
+
+Filters on spectra variables work as they do for any other dataset. Finding
+spectra that *contain a peak* at a given m/z is different: it has to look at
+the signal, and mzPeak stores signal ordered by spectrum, which means a
+filter on m/z cannot skip anything (every block of rows spans the whole mass
+range).
+
+`filterContainsMz()` runs that search inside the storage engine rather than
+pulling peaks into R:
+
+```{r, eval = FALSE}
+hits <- filterContainsMz(be, 278.093, ppm = 20)
+```
+
+For datasets where this is a common query, build an m/z-ordered copy of the
+signal. Sorting is what makes the block statistics useful, so the same
+search then reads a handful of blocks instead of everything:
+
+```{r, eval = FALSE}
+buildProjection(path)          # optional, per-run, deletable
+```
+
+On a 5-million-point test dataset this made `filterContainsMz()` around eight
+times faster. A projection is a **cache**: it is a second copy of the signal
+and so costs roughly as much disk again, it can be dropped with
+`dropProjection()`, and results are identical with or without it — only the
+speed changes. Build it per run, for the runs you query often.
 
 # Streaming large mzML files
 

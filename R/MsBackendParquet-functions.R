@@ -19,11 +19,6 @@
 # Name of the sub-directory storing the spectra dataset.
 .SPECTRA_DIR <- "spectra"
 
-# File written next to the spectra dataset that marks the directory as a
-# valid `MsBackendParquet` dataset and stores a small bit of metadata
-# that is cheap to read.
-.META_FILE <- "MsBackendParquet.json"
-
 # Default Parquet compression. `snappy` is widely supported and
 # reasonably fast; users can override with `compression`.
 .DEFAULT_COMPRESSION <- "snappy"
@@ -45,56 +40,16 @@
     file.path(path, .SPECTRA_DIR)
 }
 
-#' @noRd
-.meta_path <- function(path) {
-    file.path(path, .META_FILE)
-}
-
+#' Is `path` a dataset this backend can open?
+#'
+#' Presence of the mzStack manifest is the whole test. Earlier versions also
+#' accepted any directory containing a `spectra/` sub-directory; that
+#' fallback is gone, so a dataset written before mzStack naming fails with a
+#' clear message instead of half-opening.
+#'
 #' @noRd
 .is_parquet_dataset <- function(path) {
-    length(path) == 1L && dir.exists(path) && dir.exists(.spectra_path(path))
-}
-
-#' Write a small metadata file alongside the dataset.
-#'
-#' @noRd
-.write_meta <- function(path, partitioning = character(),
-                        peaksVariables = c("mz", "intensity")) {
-    info <- list(
-        package = "MsBackendParquet",
-        version = as.character(utils::packageVersion("MsBackendParquet")),
-        created = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
-        partitioning = as.character(partitioning),
-        peaksVariables = as.character(peaksVariables))
-    writeLines(.to_json(info), .meta_path(path))
-    invisible(TRUE)
-}
-
-#' Minimal JSON writer to avoid a hard jsonlite dependency.
-#'
-#' @noRd
-.to_json <- function(x) {
-    quote_str <- function(s) {
-        s <- gsub("\\\\", "\\\\\\\\", s)
-        s <- gsub("\"", "\\\\\"", s)
-        paste0("\"", s, "\"")
-    }
-    fmt <- function(v) {
-        if (is.character(v))
-            paste0("[", paste0(quote_str(v), collapse = ","), "]")
-        else if (is.logical(v))
-            paste0("[", paste0(tolower(as.character(v)), collapse = ","), "]")
-        else
-            paste0("[", paste0(v, collapse = ","), "]")
-    }
-    parts <- vapply(names(x), function(nm) {
-        v <- x[[nm]]
-        if (length(v) == 1L && is.character(v))
-            paste0(quote_str(nm), ":", quote_str(v))
-        else
-            paste0(quote_str(nm), ":", fmt(v))
-    }, character(1))
-    paste0("{", paste0(parts, collapse = ","), "}")
+    .is_mzstack_dataset(path)
 }
 
 # ------------------------------------------------------------------------------
@@ -109,6 +64,15 @@
 #' @noRd
 .ids <- function(x) {
     x@spectraIds
+}
+
+#' Which signal representation this backend reads: `"auto"`, `"profile"` or
+#' `"centroid"`. Only applicable to mzPeak-backed datasets.
+#'
+#' @noRd
+.representation <- function(x) {
+    r <- x@representation
+    if (!length(r)) "auto" else r[1L]
 }
 
 #' Variables actually present as columns in the on-disk dataset (excluding
@@ -331,8 +295,12 @@
 
     # Read only the peak columns actually asked for
     want <- intersect(pv, columns)
-    sel <- unique(c("spectrum_id_", want))
-    res <- .fetch_sql(x, sel)
+    res <- if (.dataset_kind(.path(x)) == "mzpeak")
+        # Signal lives in the archives, one row per data point.
+        .fetch_peaks_point(x, want)
+    else
+        # Native dataset: peaks are list columns beside the metadata.
+        .fetch_sql(x, unique(c("spectrum_id_", want)))
     sid <- res$spectrum_id_
     if (length(sid) != length(.ids(x)) ||
         !identical(as.integer(sid), .ids(x))) {
@@ -344,6 +312,95 @@
     mz_list <- if ("mz" %in% want) res$mz else NULL
     int_list <- if ("intensity" %in% want) res$intensity else NULL
     .pack_peaks(mz_list, int_list, columns = columns, drop = drop)
+}
+
+#' Which signal file of a run to read.
+#'
+#' mzPeak stores profile and centroid signal in separate members, and both
+#' may be present for the same spectra. `"auto"` prefers centroids, because
+#' that is what nearly all downstream `Spectra` code expects; the explicit
+#' settings ask for one or the other and fail loudly when it is absent,
+#' rather than quietly handing back the other representation.
+#'
+#' @noRd
+.run_signal_file <- function(run, representation = "auto") {
+    prof <- run$profile
+    cent <- run$centroid
+    pick <- switch(
+        representation,
+        profile = if (is.na(prof))
+            stop("Run '", run$run_id, "' holds no profile data. Open the ",
+                 "dataset with representation = \"centroid\" or \"auto\".",
+                 call. = FALSE) else prof,
+        centroid = if (is.na(cent))
+            stop("Run '", run$run_id, "' holds no centroid data. Open the ",
+                 "dataset with representation = \"profile\" or \"auto\".",
+                 call. = FALSE) else cent,
+        if (!is.na(cent)) cent else prof)
+    file.path(run$path, pick)
+}
+
+#' Fetch peaks for an mzPeak-backed dataset.
+#'
+#' The signal lives in the archives, one row per data point, so the peaks of
+#' a spectrum have to be gathered back up. DuckDB does that with `list()`,
+#' which returns exactly the two list columns `C_pack_peaks()` already
+#' consumes.
+#'
+#' One query per involved run: the archives are separate files, and querying
+#' them separately also keeps each `WHERE` clause small and lets each run
+#' choose its own id-restriction strategy.
+#'
+#' @return `data.frame` with `spectrum_id_` and the requested list columns,
+#'     in `spectraIds` order.
+#'
+#' @noRd
+.fetch_peaks_point <- function(x, want) {
+    con <- .duckdb_con()
+    m <- .dataset_manifest(.path(x))
+    ids <- .ids(x)
+    parts <- .manifest_split_ids(m, ids)
+    rep <- .representation(x)
+
+    out <- lapply(parts, function(p) {
+        run <- p$run
+        f <- .run_signal_file(run, rep)
+        cols <- .mzpeak_signal_columns(f)
+        # The specification guarantees the sorting-rank-0 array (m/z) is
+        # ascending, so ordering inside the aggregate should be a no-op --
+        # but `list()` gives no order guarantee of its own, and m/z paired
+        # with the wrong intensity is a silent, unrecoverable error.
+        agg <- character()
+        if ("mz" %in% want)
+            agg <- c(agg, paste0("list(", cols$mz, " ORDER BY ", cols$mz,
+                                 ") AS ", .quote_ident("mz")))
+        if ("intensity" %in% want)
+            agg <- c(agg, paste0("list(", cols$intensity, " ORDER BY ",
+                                 cols$mz, ") AS ",
+                                 .quote_ident("intensity")))
+        sel <- paste0(
+            "SELECT CAST(", run$uid_base, " + ", cols$index,
+            " AS INTEGER) AS ", .quote_ident("spectrum_id_"), ", ",
+            paste(agg, collapse = ", "),
+            " FROM read_parquet(", DBI::dbQuoteString(con, f), ")")
+        grp <- paste0(" GROUP BY ", cols$index)
+
+        where <- .ids_where(p$local, full = FALSE, col = cols$index)
+        if (!is.null(where) && is.na(where))
+            # Too many scattered spectra to inline; join against a
+            # temporarily registered table instead.
+            return(.with_id_table(p$local, function(nm)
+                DBI::dbGetQuery(con, paste0(
+                    sel, " SEMI JOIN ", .quote_ident(nm), " i ON ",
+                    cols$index, " = i.", .quote_ident("spectrum_id_"),
+                    grp))))
+        DBI::dbGetQuery(con, paste0(sel, " WHERE ", where, grp))
+    })
+
+    res <- do.call(rbind, out)
+    if (is.null(res))
+        res <- data.frame(spectrum_id_ = integer())
+    res
 }
 
 #' Fetch a single peaks column as a `CompressedNumericList`.
@@ -558,6 +615,20 @@
         "SELECT \"spectrum_id_\" FROM ", .quote_ident(.dataset_view(path)),
         " ORDER BY \"spectrum_id_\""))
     as.integer(ids$spectrum_id_)
+}
+
+#' Number of spectra in a native dataset.
+#'
+#' Counted from the written Parquet files rather than threaded through the
+#' three different writers. `count(*)` is answered from row-group metadata,
+#' so it never reads a data page.
+#'
+#' @noRd
+.dataset_n_spectra <- function(path) {
+    con <- .duckdb_con()
+    as.integer(DBI::dbGetQuery(con, paste0(
+        "SELECT count(*) AS n FROM ",
+        .quote_ident(.dataset_view(path))))$n)
 }
 
 #' @noRd

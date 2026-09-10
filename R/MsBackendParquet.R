@@ -31,8 +31,21 @@
 #'
 #' The `MsBackendParquet` is an implementation of [Spectra::MsBackend()] for
 #' [Spectra::Spectra()] objects that stores and retrieves mass spectrometry
-#' (MS) data from an on-disk
-#' [Apache Parquet](https://parquet.apache.org/) dataset.
+#' (MS) data from an on-disk **mzStack** dataset, built on
+#' [Apache Parquet](https://parquet.apache.org/).
+#'
+#' An mzStack dataset is a directory identified by an `mzStack.json`
+#' manifest. It holds one or more *runs*, of either kind:
+#'
+#' - `native` - converted from raw MS data files by this package, with m/z
+#'   and intensity stored as Parquet `list<double>` columns beside the
+#'   spectra metadata;
+#' - `mzpeak` - an index over external
+#'   [HUPO-PSI mzPeak](https://github.com/HUPO-PSI/mzPeak) archives, which
+#'   are read where they are and never modified.
+#'
+#' The manifest records which kind each run is, so a dataset never has to be
+#' identified by guessing from its directory layout.
 #'
 #' The backend uses the [Apache Arrow](https://arrow.apache.org/docs/r)
 #' R bindings to read and write Parquet files. Spectra metadata together
@@ -44,6 +57,13 @@
 #' New datasets can be created from raw MS data files using
 #' [createMsBackendParquetDataset()] or by changing the backend of an
 #' existing `Spectra` object with [Spectra::setBackend()].
+#'
+#' A backend can also be opened over a collection of
+#' [HUPO-PSI mzPeak](https://github.com/HUPO-PSI/mzPeak) archives registered
+#' with [createMzPeakDataset()]. In that case the archives are read where
+#' they are and are never modified: the dataset holds only a small derived
+#' index of the spectrum metadata, and peak data is read from the archives
+#' on demand. See [createMzPeakDataset()] and [filterContainsMz()].
 #'
 #' @details
 #'
@@ -175,6 +195,14 @@
 #' @param ppm For `filterPrecursorMzValues()`: `numeric` with the
 #'     m/z-relative tolerance in parts-per-million.
 #'
+#' @param representation For `backendInitialize()` on a dataset built from
+#'     mzPeak archives: `character(1)` selecting which signal to read.
+#'     mzPeak keeps profile and centroid data in separate files, and an
+#'     archive may hold both. `"auto"` (the default) prefers centroids and
+#'     falls back to profile data; `"profile"` and `"centroid"` ask for one
+#'     specifically and fail if the archive does not have it. Ignored for
+#'     datasets written by [createMsBackendParquetDataset()].
+#'
 #' @param rt For `filterRt()`: `numeric(2)` with the retention time
 #'     range.
 #'
@@ -231,6 +259,7 @@ setClass(
         .dataset_vars = "character",
         .peaks_vars = "character",
         partitioning = "character",
+        representation = "character",
         .full = "logical",
         .pending_predicate = "ANY",
         .predicate_clean = "logical"),
@@ -240,6 +269,7 @@ setClass(
         .dataset_vars = character(),
         .peaks_vars = c("mz", "intensity"),
         partitioning = character(),
+        representation = "auto",
         .full = FALSE,
         .pending_predicate = NULL,
         .predicate_clean = FALSE,
@@ -260,7 +290,7 @@ setValidity("MsBackendParquet", function(object) {
     if (length(object@path) && !.is_parquet_dataset(object@path)) {
         msg <- c(msg,
                  paste0("'", object@path,
-                        "' is not a valid MsBackendParquet dataset."))
+                        "' is not a valid mzStack dataset."))
     }
     if (is.null(msg)) TRUE else msg
 })
@@ -281,6 +311,11 @@ setMethod("show", "MsBackendParquet", function(object) {
     methods::callNextMethod()
     if (length(.path(object))) {
         cat("Dataset: ", .path(object), "\n", sep = "")
+        if (.dataset_kind(.path(object)) == "mzpeak") {
+            m <- .dataset_manifest(.path(object))
+            cat("mzPeak archives: ", length(m$runs), " run(s), signal read ",
+                "as: ", .representation(object), "\n", sep = "")
+        }
     }
 })
 
@@ -291,7 +326,8 @@ setMethod("show", "MsBackendParquet", function(object) {
 #' @rdname MsBackendParquet
 setMethod(
     "backendInitialize", "MsBackendParquet",
-    function(object, path = character(), data, ...) {
+    function(object, path = character(), data,
+             representation = c("auto", "profile", "centroid"), ...) {
         if (!length(path)) {
             stop("Parameter 'path' is required for 'MsBackendParquet'.",
                  call. = FALSE)
@@ -301,24 +337,38 @@ setMethod(
             stop("'path' must be a length-one character vector.",
                  call. = FALSE)
         }
+        representation <- match.arg(representation)
 
         path <- normalizePath(path, mustWork = FALSE)
         # If `data` is given, materialise a new dataset at `path`.
         if (!missing(data)) {
             if (.is_parquet_dataset(path)) {
-                stop("A MsBackendParquet dataset already exists at '",
+                stop("An mzStack dataset already exists at '",
                      path, "'.", call. = FALSE)
             }
             createMsBackendParquetDataset(path = path, data = data, ...)
         }
         if (!.is_parquet_dataset(path)) {
-            stop("'", path, "' is not a MsBackendParquet dataset.",
-                 call. = FALSE)
+            stop("'", path, "' is not an mzStack dataset: no ",
+                 .MZSTACK_MANIFEST, ". Datasets written before mzStack ",
+                 "naming must be re-created.", call. = FALSE)
         }
         object@path <- path
-        object@spectraIds <- .dataset_spectra_ids(path)
+        object@representation <- representation
+        # Ids are handed out in one contiguous block per run, in the order
+        # runs were written, so the full set is exactly `seq_len(N)`;
+        # computable from the manifest without reading the dataset. True of
+        # both kinds: the converters allocate `spectrum_id_` from 1 upwards.
+        object@spectraIds <- seq_len(
+            .manifest_n_spectra(.dataset_manifest(path)))
+        # Both kinds present `Spectra` names through the same translating
+        # view. They differ only in where the peaks live: an mzPeak-backed
+        # dataset reads them from the archives (so the view has no peak
+        # columns), a native one from `mz` / `intensity` list columns in the
+        # view.
         object@.dataset_vars <- .dataset_var_names(path)
-        object@.peaks_vars <- .dataset_peak_names(path)
+        object@.peaks_vars <- if (.dataset_kind(path) == "mzpeak")
+            c("mz", "intensity") else .dataset_peak_names(path)
         object@.full <- TRUE
         sv <- union(object@.dataset_vars, object@.peaks_vars)
         object <- methods::callNextMethod(
@@ -468,7 +518,8 @@ setMethod("reset", "MsBackendParquet", function(object) {
     message("Restoring original data ...", appendLF = FALSE)
     if (length(.path(object)) && .is_parquet_dataset(.path(object))) {
         object <- backendInitialize(MsBackendParquet(),
-                                    path = .path(object))
+                                    path = .path(object),
+                                    representation = .representation(object))
     }
     message("DONE")
     object

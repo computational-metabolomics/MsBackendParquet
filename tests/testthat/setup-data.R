@@ -1,5 +1,5 @@
 # Shared test fixtures: build a tiny in-memory DataFrame holding three
-# spectra and materialise it as a MsBackendParquet dataset in a fresh
+# spectra and materialise it as an mzStack dataset in a fresh
 # temporary directory.
 .make_test_data <- function() {
     sd <- S4Vectors::DataFrame(
