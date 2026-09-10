@@ -15,8 +15,12 @@ output:
 # Performance considerations
 
 This document explains the performance considerations in `MsBackendParquet`.
-The two benchmark scripts in this directory
-(`benchmark-spectraql-multifile.R` and `microbench.R`) measure the result.
+The four benchmark scripts in this directory measure the result:
+`benchmark-spectraql-multifile.R` runs an end-to-end query suite against the
+other on-disk backends, `microbench.R` times individual operations,
+`benchmark-sweeps.R` varies the tunable options one axis at a time, and
+`benchmark-mzpeak.R` measures the mzPeak archive path (ingest, index size and
+peak search with and without a projection).
 
 ## Connection and session management
 
@@ -157,6 +161,35 @@ The two benchmark scripts in this directory
   *Why:* keeps the on-disk dataset compact.
 - **Unique per-chunk basenames.** *Why:* appends never rewrite existing parts.
 
+## mzPeak archives and projections
+
+`R/ingest.R`, `R/mzpeak-archive.R`, `R/column-map.R`, `R/projections.R`
+
+- **Ingest reads metadata only.** Registering [mzPeak](https://github.com/HUPO-PSI/mzPeak) archives writes a *derived
+  index*: one flat row per spectrum, gathered from the archive's metadata table
+  and its scans / precursors / selected-ion side tables, never a byte of signal.
+  *Why:* the cost then scales with the number of spectra rather than the size of
+  the data, and the archives are neither modified nor copied — peaks are read
+  from them on demand, so exporting a run back to mzPeak is a directory copy.
+- **Index row-group size 4096** (`.INDEX_ROW_GROUP_SIZE`), against 250 for a
+  natively converted dataset. *Why:* index rows are narrow metadata rows rather
+  than peak lists, so a block of 4096 spectra is still small enough to skip
+  cheaply while keeping per-block bookkeeping down.
+- **One SQL translation view** (`R/column-map.R`). mzPeak's column names and
+  encodings are mapped to `Spectra` conventions in a single view, including
+  `time` in minutes to `rtime` in seconds. *Why:* one vocabulary serves both
+  dataset kinds, and no renaming or unit conversion happens per query in R.
+- **Optional m/z-ordered projections** (`R/projections.R`; `COPY ... ORDER BY
+  mz`, [zstd](https://facebook.github.io/zstd/), row groups of 100,000). An archive stores signal in spectrum
+  order, so every row group spans nearly the whole mass range and the [min/max
+  statistics](https://duckdb.org/docs/stable/guides/performance/file_formats) prune nothing on an m/z filter; re-sorting the same rows by m/z
+  makes each block a narrow slice and `filterContainsMz()` reads a handful of
+  blocks instead of everything. *Why:* it buys the search most of an order of
+  magnitude (8.3x below) for roughly the disk of a second copy of the signal. A
+  projection is a **cache**: it can be dropped and rebuilt, and the answer is
+  identical with or without it — the benchmark asserts exactly that before
+  reporting.
+
 ## Tunable options
 
 All read via `getOption`:
@@ -172,8 +205,9 @@ All read via `getOption`:
 ## Current performance
 
 Measured on macOS x86_64, R 4.6.0, duckdb 1.5.2, arrow 24.0.0, 12 threads, with
-[`MsDataHub::PestMix1_DDA.mzML()`](https://bioconductor.org/packages/MsDataHub/). Reproduce with the two scripts in this
-directory.
+[`MsDataHub::PestMix1_DDA.mzML()`](https://bioconductor.org/packages/MsDataHub/) (except the mzPeak numbers, which use the
+synthetic fixture described below). Reproduce with the scripts in this
+directory; the commands are listed at the end of this section.
 
 End-to-end [SpectraQL](https://github.com/RforMassSpectrometry/SpectraQL) suite, 50 samples / 380,100 spectra
 (`benchmark-spectraql-multifile.R`; medians in ms, lower is better):
@@ -209,12 +243,46 @@ Per-operation medians at 76,020 spectra (`microbench.R`; medians in ms):
 | `mz()` | 594.4 |
 | `ionCount()` | 1403.8 |
 
+mzPeak archives (`benchmark-mzpeak.R`). This one runs against a **synthetic**
+fixture — 20 archives, 10,000 spectra, 5,000,000 data points, built by
+`tests/testthat/helper-mzpeak.R` so the script runs anywhere — so the absolute
+numbers are indicative and the ratios are the point. Re-run against real
+archives from the public corpus linked at [mzpeak.org](https://www.mzpeak.org/) before drawing
+conclusions about real data.
+
+| storage and build | |
+|---|---|
+| archives | 9.8 MB |
+| derived index | 0.3 MB (3.40% of the archives) |
+| m/z-ordered projection | 8.8 MB (90.09% of the archives) |
+| ingest, metadata only | 1.49 s for 10,000 spectra |
+| projection build | 1.19 s |
+
+| query | median (ms) |
+|---|---|
+| `filterRt` | 1 |
+| `filterMsLevel` | 1 |
+| `filterPrecursorMzRange` | 1 |
+| `spectraData` (metadata) | 33 |
+| `peaksData` (200 spectra) | 493 |
+| `filterContainsMz` (archives) | 331 |
+| `filterContainsMz` (projection) | 40 |
+
+The three costs behave as the design intends. Ingest touches metadata only, so
+it scales with spectrum count rather than archive size, and the index it writes
+is 3.4% of what it indexes. Metadata filters are answered from the index at
+about a millisecond, without help. The peak search is the one query the archive
+layout cannot serve — 331 ms scanning signal stored in spectrum order — and the
+m/z-ordered projection brings it to 40 ms, **8.3x faster**, for 90% of the
+archive size again in disk.
+
 Reproduce:
 
 ```sh
 Rscript inst/benchmarks/benchmark-spectraql-multifile.R # end-to-end suite
 Rscript inst/benchmarks/microbench.R # per-operation
 Rscript inst/benchmarks/benchmark-sweeps.R # config sweeps + figures
+Rscript inst/benchmarks/benchmark-mzpeak.R # mzPeak archives + projections
 ```
 
 ## Configuration sweeps

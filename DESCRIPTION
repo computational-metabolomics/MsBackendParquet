@@ -34,10 +34,12 @@ Imports:
     DBI,
     duckdb (>= 1.2.0),
     IRanges,
+    jsonlite,
     methods,
     MsCoreUtils,
     ProtGenerics (>= 1.36.0),
     S4Vectors,
+    stats,
     utils
 Suggests:
     BiocStyle,
@@ -59,8 +61,13 @@ Collate:
     'MsBackendParquet-functions.R'
     'MsBackendParquet.R'
     'MsBackendParquet-creators.R'
+    'column-map.R'
     'duckdb-connection.R'
+    'ingest.R'
     'metadata-cache.R'
+    'mzpeak-archive.R'
+    'mzstack-manifest.R'
+    'projections.R'
     'zzz.R'
 Config/testthat/edition: 3
 Config/roxygen2/version: 8.0.0
