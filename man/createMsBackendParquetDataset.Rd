@@ -8,7 +8,7 @@ createMsBackendParquetDataset(
   path = character(),
   x = character(),
   data,
-  backend = Spectra::MsBackendMzR(),
+  backend = MsBackendMzR(),
   chunksize = 10L,
   partitioning = character(),
   compression = .DEFAULT_COMPRESSION,

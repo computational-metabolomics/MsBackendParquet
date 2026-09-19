@@ -222,7 +222,7 @@ The DuckDB connection used to read the dataset is held at package
 level, not on the object, and is keyed by process id, so a worker
 started in a \emph{new} process opens its own.
 
-Forked workers are the exception, and \code{\link[ProtGenerics:backendBpparam]{backendBpparam()}} therefore
+Forked workers are the exception, and \code{\link[Spectra:backendBpparam]{Spectra::backendBpparam()}} therefore
 downgrades a fork-based setup such as \code{\link[BiocParallel:MulticoreParam]{BiocParallel::MulticoreParam()}}
 to \code{\link[BiocParallel:SerialParam]{BiocParallel::SerialParam()}}. A fork inherits the parent's DuckDB
 connection as a live R external pointer whose finalizer, when the

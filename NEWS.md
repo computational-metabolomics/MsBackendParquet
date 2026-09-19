@@ -1,3 +1,13 @@
+# MsBackendParquet 0.99.3
+
+## Internal
+
+- Package code now calls imported functions directly instead of through `::`, with the corresponding selective `importFrom()` / `importMethodsFrom()` directives declared in the roxygen blocks.
+
+- `mzR` moves from `Suggests` to `Imports`, since the `engine = "mzr"` read path in `createMsBackendParquetDataset()` and `mzMLToParquet()` depends on it.
+
+- `tests/testthat.R` additionally runs the `MsBackend` compliance test suite shipped in `Spectra` (`inst/test_backends/test_MsBackend`) against a dataset created from `MsDataHub::MS3TMT11.mzML()`.
+
 # MsBackendParquet 0.99.2
 
 ## Internal

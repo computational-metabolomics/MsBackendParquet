@@ -1,6 +1,6 @@
 Package: MsBackendParquet
 Title: Apache Parquet-based Mass Spectrometry Data Backend
-Version: 0.99.2
+Version: 0.99.3
 Authors@R: c(
     person(
         "Ossama",
@@ -37,6 +37,7 @@ Imports:
     jsonlite,
     methods,
     MsCoreUtils,
+    mzR,
     ProtGenerics (>= 1.36.0),
     S4Vectors,
     stats,
@@ -48,7 +49,6 @@ Suggests:
     dplyr,
     knitr,
     MsDataHub,
-    mzR,
     rmarkdown,
     SpectraQL,
     testthat (>= 3.0.0)
@@ -72,4 +72,4 @@ Collate:
     'sample-data.R'
     'zzz.R'
 Config/testthat/edition: 3
-Config/roxygen2/version: 8.0.0
+Config/roxygen2/version: 8.1.0

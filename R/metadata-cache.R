@@ -97,7 +97,7 @@
     view <- .quote_ident(.dataset_view(path))
     sel <- paste(c("\"spectrum_id_\"",
                    vapply(need, .quote_ident, character(1))), collapse = ", ")
-    fetched <- DBI::dbGetQuery(con, paste0(
+    fetched <- dbGetQuery(con, paste0(
         "SELECT ", sel, " FROM ", view, " ORDER BY \"spectrum_id_\""))
     ids <- as.integer(fetched$spectrum_id_)
     fetched$spectrum_id_ <- NULL

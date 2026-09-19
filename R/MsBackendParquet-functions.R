@@ -225,7 +225,7 @@
     where <- .where_sql(x)
     if (!is.null(where) && is.na(where)) {
         return(.with_id_table(.ids(x), function(nm) {
-            DBI::dbGetQuery(con, paste0(
+            dbGetQuery(con, paste0(
                 "SELECT ", paste0("s.", vapply(cols, .quote_ident,
                                                character(1)),
                                   collapse = ", "),
@@ -238,7 +238,7 @@
         paste0("SELECT ", select_sql, " FROM ", view)
     else
         paste0("SELECT ", select_sql, " FROM ", view, " WHERE ", where)
-    DBI::dbGetQuery(con, sql)
+    dbGetQuery(con, sql)
 }
 
 #' Fetch a `data.frame` with the requested *non-peak* spectra variables
@@ -428,13 +428,15 @@
 #' `NumericList(compress = FALSE)` costs 519 ms, because the latter has to keep
 #' a separate R vector per spectrum.
 #'
+#' @importFrom IRanges NumericList
+#' 
 #' @noRd
 .fetch_peaks_column <- function(x, column) {
     if (!length(.ids(x))) {
-        return(IRanges::NumericList(compress = TRUE))
+        return(NumericList(compress = TRUE))
     }
     vals <- .fetch_peaks_data(x, columns = column, drop = TRUE)
-    IRanges::NumericList(vals, compress = TRUE)
+    NumericList(vals, compress = TRUE)
 }
 
 #' Combine separate `mz` / `intensity` list columns into the list-of-
@@ -488,12 +490,18 @@
 #'
 #' Mirrors `MsBackendSql`'s `.spectra_data_sql()`.
 #'
+#' @importFrom methods getMethod as
+#'
+#' @importFrom S4Vectors make_zero_col_DFrame
+#'
+#' @importMethodsFrom S4Vectors extractCOLS
+#' 
 #' @noRd
 .spectra_data_parquet <- function(x, columns = spectraVariables(x)) {
-    res <- methods::getMethod(
+    res <- getMethod(
         "spectraData", "MsBackendCached")(x, columns = columns)
     if (is.null(res)) {
-        res <- S4Vectors::make_zero_col_DFrame(length(x))
+        res <- make_zero_col_DFrame(length(x))
     }
     ds_cols <- intersect(columns, x@spectraVariables)
     ds_cols <- ds_cols[!ds_cols %in% c("mz", "intensity", colnames(res))]
@@ -507,7 +515,7 @@
     ds_cols <- setdiff(ds_cols, smp_cols)
 
     if (length(ds_cols)) {
-        res <- cbind(res, methods::as(
+        res <- cbind(res, as(
             .fetch_spectra_data(x, columns = ds_cols), "DataFrame"))
     }
     if (length(smp_cols)) {
@@ -530,7 +538,7 @@
         res$smoothed <- as.logical(res$smoothed)
     }
 
-    S4Vectors::extractCOLS(res, columns)
+    extractCOLS(res, columns)
 }
 
 # ------------------------------------------------------------------------------
@@ -597,6 +605,8 @@
 #' `run_id=<id>` directory. `path` is still the dataset, because that is what
 #' the cache is keyed on.
 #'
+#' @importFrom arrow write_parquet
+#'
 #' @noRd
 .write_spectra_chunk <- function(
     path,
@@ -632,7 +642,7 @@
     }
 
     rgs <- max(1L, as.integer(row_group_size))
-    tbl <- arrow::as_arrow_table(data)
+    tbl <- as_arrow_table(data)
     if (length(partitioning)) {
         # Use a unique basename template per chunk to avoid overwriting
         # previous Parquet parts when appending to an existing
@@ -640,7 +650,7 @@
         token <- paste0(format(Sys.time(), "%H%M%S"), "-",
                         paste(sample(c(letters, 0:9), 6, TRUE),
                               collapse = ""))
-        arrow::write_dataset(
+        write_dataset(
             tbl,
             path = sp,
             format = "parquet",
@@ -656,7 +666,7 @@
                         format(Sys.time(), "%Y%m%d%H%M%S"),
                         paste(sample(c(letters, 0:9), 6, TRUE),
                               collapse = ""))
-        arrow::write_parquet(
+        write_parquet(
             tbl,
             sink = file.path(sp, base),
             compression = compression,
@@ -673,7 +683,7 @@
 .dataset_col_names <- function(path) {
     con <- .duckdb_con()
     view <- .quote_ident(.dataset_view(path))
-    names(DBI::dbGetQuery(con, paste0("SELECT * FROM ", view, " LIMIT 0")))
+    names(dbGetQuery(con, paste0("SELECT * FROM ", view, " LIMIT 0")))
 }
 
 #' List the non-peak variable names present in the dataset.
@@ -696,7 +706,7 @@
 #' @noRd
 .dataset_spectra_ids <- function(path) {
     con <- .duckdb_con()
-    ids <- DBI::dbGetQuery(con, paste0(
+    ids <- dbGetQuery(con, paste0(
         "SELECT \"spectrum_id_\" FROM ", .quote_ident(.dataset_view(path)),
         " ORDER BY \"spectrum_id_\""))
     as.integer(ids$spectrum_id_)
@@ -719,7 +729,7 @@
 #' @noRd
 .dataset_unique_ms_levels <- function(path) {
     con <- .duckdb_con()
-    res <- DBI::dbGetQuery(con, paste0(
+    res <- dbGetQuery(con, paste0(
         "SELECT DISTINCT \"msLevel\" FROM ",
         .quote_ident(.dataset_view(path)), " ORDER BY \"msLevel\""))
     sort(as.integer(res$msLevel))
@@ -738,19 +748,19 @@
     view <- .quote_ident(.dataset_view(.path(object)))
     sel <- paste0("SELECT \"spectrum_id_\" FROM ", view, " WHERE ")
     if (!restrict) {
-        res <- DBI::dbGetQuery(con, paste0(sel, where))
+        res <- dbGetQuery(con, paste0(sel, where))
         return(as.integer(res$spectrum_id_))
     }
     idw <- .ids_where(.ids(object), full = .is_full(object))
     if (!is.null(idw) && is.na(idw))
         return(.with_id_table(.ids(object), function(nm) {
-            as.integer(DBI::dbGetQuery(con, paste0(
+            as.integer(dbGetQuery(con, paste0(
                 "SELECT s.\"spectrum_id_\" FROM ", view, " s JOIN ",
                 .quote_ident(nm), " i",
                 " ON s.\"spectrum_id_\" = i.\"spectrum_id_\"",
                 " WHERE ", where))$spectrum_id_)
         }))
-    res <- DBI::dbGetQuery(
+    res <- dbGetQuery(
         con, paste0(sel, if (is.null(idw)) where
                          else .pred_and(idw, where)))
     as.integer(res$spectrum_id_)
@@ -799,6 +809,8 @@
 #' Merge multiple `MsBackendParquet` objects. All must point to the same
 #' dataset path.
 #'
+#' @importFrom MsCoreUtils rbindFill
+#' 
 #' @noRd
 .combine <- function(objects) {
     if (length(objects) == 1L) {
@@ -817,7 +829,7 @@
     res <- objects[[1L]]
     res@spectraIds <- unlist(lapply(objects, .ids), use.names = FALSE)
     res@localData <- do.call(
-        MsCoreUtils::rbindFill,
+        rbindFill,
         lapply(objects, function(z) z@localData))
     if (!nrow(res@localData)) {
         res@localData <- data.frame(row.names = seq_along(res@spectraIds))

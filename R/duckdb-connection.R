@@ -44,7 +44,7 @@
     if (!is.null(mem))
         settings <- c(settings, sprintf("SET memory_limit = '%s'", mem))
     for (s in settings)
-        try(DBI::dbExecute(con, s), silent = TRUE)
+        try(dbExecute(con, s), silent = TRUE)
     invisible(con)
 }
 
@@ -65,12 +65,22 @@
 #' destructor and hangs the same way. `backendBpparam()` therefore refuses
 #' fork-based parallelisation outright; see the note there.
 #'
+#' @importMethodsFrom DBI dbConnect
+#'
+#' @importMethodsFrom DBI dbGetQuery
+#'
+#' @importMethodsFrom DBI dbExecute
+#'
+#' @importMethodsFrom DBI dbIsValid
+#'
+#' @importFrom duckdb duckdb
+#'
 #' @noRd
 .duckdb_con <- function() {
     con <- .duckdb_state$con
     pid <- Sys.getpid()
     if (!is.null(con) && identical(.duckdb_state$pid, pid) &&
-        DBI::dbIsValid(con))
+        dbIsValid(con))
         return(con)
     if (!is.null(con) && !identical(.duckdb_state$pid, pid)) {
         # Different process: the inherited handle and its view names are not
@@ -78,7 +88,7 @@
         # for why a forked child cannot be rescued here.
         .duckdb_state$views <- new.env(parent = emptyenv())
     }
-    con <- DBI::dbConnect(duckdb::duckdb(), dbdir = ":memory:")
+    con <- dbConnect(duckdb(), dbdir = ":memory:")
     .duckdb_configure(con)
     .duckdb_state$con <- con
     .duckdb_state$pid <- pid
@@ -100,6 +110,10 @@
 
 #' Register (once) a DuckDB view over the Parquet files of a dataset and
 #' return its name.
+#'
+#' @importMethodsFrom DBI dbQuoteString
+#'
+#' @importMethodsFrom DBI dbQuoteIdentifier
 #'
 #' @noRd
 .dataset_view <- function(path) {
@@ -179,10 +193,10 @@
     for (k in unique(c(path, key))) {
         if (exists(k, envir = views, inherits = FALSE)) {
             view <- get(k, envir = views)
-            if (!is.null(con) && DBI::dbIsValid(con))
-                try(DBI::dbExecute(con, sprintf(
+            if (!is.null(con) && dbIsValid(con))
+                try(dbExecute(con, sprintf(
                     "DROP VIEW IF EXISTS %s",
-                    DBI::dbQuoteIdentifier(con, view))), silent = TRUE)
+                    dbQuoteIdentifier(con, view))), silent = TRUE)
             rm(list = k, envir = views)
         }
     }
@@ -214,7 +228,7 @@
         quoted <- paste0("\"", name, "\"")
     } else {
         quoted <- as.character(
-            DBI::dbQuoteIdentifier(.duckdb_con(), name))
+            dbQuoteIdentifier(.duckdb_con(), name))
     }
     assign(name, quoted, envir = .quoted_idents)
     quoted
@@ -260,13 +274,15 @@
 #' The registered table carries an `ord_` column, so the join can also do the
 #' reordering that would otherwise be a `match()` on the R side.
 #'
+#' @importFrom duckdb duckdb_register duckdb_unregister
+#'
 #' @noRd
 .with_id_table <- function(ids, f) {
     con <- .duckdb_con()
     nm <- sprintf("__ids_%d", sample.int(.Machine$integer.max, 1L))
-    duckdb::duckdb_register(
+    duckdb_register(
         con, nm, data.frame(spectrum_id_ = as.integer(ids),
                             ord_ = seq_along(ids)))
-    on.exit(try(duckdb::duckdb_unregister(con, nm), silent = TRUE), add = TRUE)
+    on.exit(try(duckdb_unregister(con, nm), silent = TRUE), add = TRUE)
     f(nm)
 }
