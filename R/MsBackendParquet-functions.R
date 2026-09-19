@@ -43,8 +43,8 @@
 #' The directory holding one native run's signal.
 #'
 #' Mirrors the layout an mzPeak-backed dataset gives its derived index, so a
-#' run means the same thing -- one source of spectra, one contiguous block of
-#' `spectrum_id_` -- whichever kind the dataset is.
+#' run is one source of spectra, one contiguous block of
+#' `spectrum_id_` for both kinds of datasets.
 #'
 #' @noRd
 .run_dir <- function(path, run_id) {
@@ -506,11 +506,6 @@
     ds_cols <- intersect(columns, x@spectraVariables)
     ds_cols <- ds_cols[!ds_cols %in% c("mz", "intensity", colnames(res))]
     mz_cols <- intersect(columns, c("mz", "intensity"))
-    # Run annotation is expanded from the manifest rather than selected, and
-    # has to be split off *before* `.fetch_spectra_data()`: that one is
-    # all-or-nothing about the metadata cache, so a request mixing `rtime`
-    # with `timepoint` would miss it and fall through to a SELECT for a
-    # column the view does not have.
     smp_cols <- intersect(ds_cols, x@.sample_vars)
     ds_cols <- setdiff(ds_cols, smp_cols)
 
@@ -523,9 +518,6 @@
             .sample_values(x, smp_cols), "DataFrame"))
     }
 
-    # Each peak column is fetched and wrapped on its own: building matrices
-    # only to slice a column back out of them would pay the packing cost
-    # twice and force both columns to be read even when one was asked for.
     for (col in mz_cols) {
         res[[col]] <- .fetch_peaks_column(x, col)
     }
@@ -547,11 +539,16 @@
 
 #' Can `org` be cut into runs?
 #'
-#' A run is a *maximal contiguous block* of equal `dataOrigin`, never the set of
-#' rows sharing a value. The distinction is the whole game: grouping by value
-#' would reorder the spectra, and `uid_base` plus `n_spectra` can only describe
-#' a run whose rows are contiguous. So a value that reappears after a different
-#' one disqualifies the whole vector, and the caller writes one run instead.
+#' `org` holds one `dataOrigin` per spectrum, in the order the spectra will be
+#' written. A run is a maximal contiguous block of equal `dataOrigin`, not the
+#' set of all rows sharing a value. The manifest describes a run as `uid_base`
+#' plus `n_spectra`, so a run's `spectrum_id_` values have to form one unbroken
+#' range; gathering rows by value instead would write the spectra in a
+#' different order than they were given.
+#'
+#' A `dataOrigin` that reappears after a different one therefore makes the whole
+#' vector unusable, as do `NA` or empty values, which yield no usable run id.
+#' The caller writes everything as a single run in that case.
 #'
 #' @noRd
 .origins_usable <- function(org) {
@@ -563,10 +560,20 @@
     !anyDuplicated(rle(org)$values)
 }
 
-#' Cut `org` into runs, as `list(start, end, run_id)` in input order.
+#' Cut `org` into runs, in input order.
 #'
-#' @return `NULL` when `org` cannot be blocked, which tells the caller to write
-#'     a single run.
+#' Each run id is derived from its source file's basename and then made unique,
+#' so two files sharing a basename do not land in the same `run_id=` directory.
+#'
+#' @param org one `dataOrigin` per spectrum. See `.origins_usable()` for when
+#'     such a vector can be cut.
+#'
+#' @param taken run ids already used in this dataset, so ids stay unique across
+#'     separately written chunks.
+#'
+#' @return `list` of `list(start, end, run_id, origin)`, with `start` and `end`
+#'     inclusive indices into `org`. `NULL` when `org` cannot be cut, which
+#'     tells the caller to write a single run.
 #'
 #' @noRd
 .origin_blocks <- function(org, taken = character()) {
@@ -584,8 +591,14 @@
 #' Maximal contiguous stretches of constant `f`, as index vectors into the
 #' original object.
 #'
-#' `split()` would return them in *level* order, which is exactly the reorder
-#' this must avoid; `rle()` keeps input order.
+#' Lets a caller bound how much it holds in memory at once without changing the
+#' order rows are written in. `split()` would return the groups in level order
+#' and so reorder the spectra; `rle()` keeps input order.
+#'
+#' @param f grouping factor, one value per row of the block being written.
+#'
+#' @param offset index in the original object that `f[1]` corresponds to, so
+#'     the returned vectors index that object rather than the block.
 #'
 #' @noRd
 .contiguous_chunks <- function(f, offset = 1L) {

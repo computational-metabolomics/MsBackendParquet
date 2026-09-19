@@ -36,9 +36,9 @@ together with the `mz`/`intensity` peak values in a columnar format that
 supports compression, dictionary encoding and Hive-style partitioning.
 
 A dataset is a directory identified by an `mzStack.json`
-manifest, holding one or more *runs*. A run is one source of spectra --
-one MS run -- and owns a contiguous block of the dataset's spectrum ids,
-so selecting a run is a range query rather than a scan. A run is either
+manifest, holding one or more *runs*. A run is one source of spectra
+and owns a contiguous block of the dataset's spectrum ids.
+A run is either
 `native` (converted from a raw MS data file, with peaks stored alongside
 the metadata) or `mzpeak`, an index over external
 [HUPO-PSI mzPeak](https://github.com/HUPO-PSI/mzPeak) archives that are
@@ -58,371 +58,225 @@ the on-disk dataset read-only.
 
 # Creating a Parquet dataset
 
-The quickest way to turn raw MS data files (e.g., mzML) into a
-Parquet dataset is the `mzMLToParquet()` helper. It validates the input
-files, writes the dataset and returns an initialised backend ready to be
-wrapped in a `Spectra` object:
+The examples below use a DDA data file of a pesticide mix, provided by
+the `r Biocpkg("MsDataHub")` package. The file is downloaded once and
+cached locally.
 
-```{r mzml-to-parquet, eval = FALSE}
+```{r data-file, message = FALSE}
 library(Spectra)
 library(MsBackendParquet)
-
-files <- c("sample-1.mzML", "sample-2.mzML")
-be <- mzMLToParquet(files, path = tempfile())
-sps <- Spectra(be)
-```
-
-For more control (a custom reader backend, chunk sizes, compression
-codec, Parquet row-group size, or writing an existing `DataFrame`), call
-`createMsBackendParquetDataset()` directly:
-
-```{r create-ms-backend, eval = FALSE}
-path <- tempfile()
-createMsBackendParquetDataset(path = path, x = files,
-                              partitioning = "msLevel",
-                              compression = "snappy")
-be <- backendInitialize(MsBackendParquet(), path = path)
-```
-
-Each input file becomes its own run, written to
-`<path>/spectra/run_id=<id>/`, so a filter that selects whole files prunes
-at the directory level without any `partitioning` at all. `partitioning`
-adds a further Hive level *below* the run, which is why the example uses
-`msLevel` rather than `dataOrigin`: the latter is constant within a run and
-would only restate the directory it sits in.
-
-Both functions import MS data via `MsBackendMzR()` by default and write
-spectra metadata together with the `mz`/`intensity` values as Parquet
-`list<double>` columns.
-
-For the rest of the vignette we work with a small in-memory data set
-so the document can be built without external files:
-
-```{r build-dataset}
-library(Spectra)
-library(MsBackendParquet)
-
-sd <- S4Vectors::DataFrame(
-    msLevel = c(1L, 1L, 2L),
-    rtime = c(1.0, 2.0, 3.0),
-    precursorMz = c(NA_real_, NA_real_, 110.5),
-    dataOrigin = c("file-a", "file-a", "file-b"))
-sd$mz <- IRanges::NumericList(c(100, 110), c(101, 111),
-                              c(102, 112), compress = FALSE)
-sd$intensity <- IRanges::NumericList(c(10, 20), c(11, 21),
-                                     c(12, 22), compress = FALSE)
-
-path <- tempfile()
-be <- backendInitialize(MsBackendParquet(), path = path, data = sd)
-be
-```
-
-# Accessing data
-
-`spectraData()`, `peaksData()`, `mz()`, `intensity()` and related work
-the same way as for any other `MsBackend`:
-
-```{r access}
-spectraData(be, c("msLevel", "rtime"))
-peaksData(be)[1:2]
-mz(be)
-```
-
-# Filtering with DuckDB predicate push-down
-
-Filter methods are translated into DuckDB SQL predicates that are pushed
-down to the Parquet scan. DuckDB prunes whole row groups using their
-min/max statistics (and skips whole partitions for Hive-partitioned
-datasets), so a range or set filter reads only the data it needs. When
-the filter column is held in the in-memory metadata index (see below),
-the predicate is evaluated in memory instead:
-
-```{r filtering}
-filterMsLevel(be, 1L)
-filterRt(be, c(1.5, 2.5))
-filterDataOrigin(be, "file-b")
-filterPrecursorMzRange(be, c(110, 111))
-filterPrecursorMzValues(be, 110.5, ppm = 20)
-```
-
-Chained filters combine into a single scan, and a subsequent
-`peaksData()` call reuses the same predicate to prune the peak data it
-reads.
-
-# Sample metadata
-
-An experiment records things about the *sample* a run came from -- subject,
-timepoint, treatment group, injection order -- that are not in the raw data.
-`runData()` stores them in the dataset, one row per run, keyed by `run_id`:
-
-```{r run-data}
-runData(be) <- data.frame(run_id = c("file-a", "file-b"),
-                          subject = c("S1", "S2"),
-                          timepoint = c(0L, 6L))
-runVariables(be)
-```
-
-The columns then behave like any other spectra variable:
-
-```{r run-data-access}
-spectraData(be, c("rtime", "subject", "timepoint"))
-```
-
-and `filterSampleData()` selects on them:
-
-```{r filter-sample-data}
-filterSampleData(be, timepoint == 6)
-```
-
-The annotation is held once per run, not copied onto every spectrum. That is
-not primarily about disk -- a constant column compresses to almost nothing --
-but about what a run already is. Each run owns a *contiguous block* of
-`spectrum_id_`, so `timepoint == 6` is exactly a range of ids, and
-`filterSampleData()` resolves it against a table of a few thousand rows
-rather than reading a column of a few million. The resulting predicate is a
-range on the column the files are ordered by, which is the case Parquet's
-row-group statistics prune best, and it is carried into any later
-`peaksData()`.
-
-Keeping it out of the per-spectrum data also makes it correctable. Sample
-annotation is the one thing that reliably changes after ingest -- a
-mislabelled vial, a clinical variable that arrives months later. Rewriting it
-touches a few kilobytes and leaves the signal, and any projections built over
-it, untouched.
-
-Runs with no row get `NA`, so a partially annotated dataset is fine. To go
-further -- linking samples to spectra in an experiment-wide object -- pass the
-table to `r Biocpkg("MsExperiment")`'s `linkSampleData()`, which keys on
-`dataOrigin` or `run_id`.
-
-# Querying with MassQL
-
-The `r Biocpkg("SpectraQL")` package adds support for the [Mass Spec Query
-Language](https://www.massql.org/) (MassQL) to `Spectra` objects. Because
-`MsBackendParquet` is an ordinary `MsBackend`, `query()` works on it
-unchanged, and the conditions of a MassQL expression are translated into
-exactly the `Spectra` filter calls that the previous section pushes down
-into DuckDB.
-
-This section works on a real DDA data file from `r Biocpkg("MsDataHub")`. The
-file is downloaded once and cached locally; converting it to Parquet takes
-a few seconds:
-
-```{r spectraql-setup, message = FALSE}
-library(SpectraQL)
 library(MsDataHub)
 
 fl <- MsDataHub::PestMix1_DDA.mzML()
-sps <- Spectra(mzMLToParquet(fl, path = tempfile()))
+```
+
+`MsDataHub` returns the file under its cache name, and the id of a run is
+taken from the name of the file it was imported from. Copying the file to
+a named path first therefore gives the dataset readable run ids:
+
+```{r name-file}
+fl_named <- file.path(tempdir(), "PestMix1_DDA.mzML")
+invisible(file.copy(fl, fl_named, overwrite = TRUE))
+```
+
+`mzMLToParquet()` converts raw MS data files into a Parquet dataset. It
+validates the input files, writes the dataset and returns an initialised
+backend, ready to be wrapped in a `Spectra` object:
+
+```{r mzml-to-parquet}
+path <- tempfile()
+be <- mzMLToParquet(fl_named, path = path, verbose = FALSE)
+
+sps <- Spectra(be)
 sps
 ```
 
-A MassQL expression has the form `"QUERY <type of data> WHERE <condition>
-AND <condition>"`. The special data type `*` returns the selected spectra
-as a `Spectra` object, so a query reads as a filter. Retention times are
-given in *seconds*:
+Each input file becomes its own run, written to
+`<path>/spectra/run_id=<id>/`, so a filter that selects whole files
+prunes at the directory level:
 
-```{r ql-rt}
-query(sps, "QUERY * WHERE RTMIN = 200 AND RTMAX = 300")
+```{r run-dirs}
+list.files(file.path(path, "spectra"))
 ```
 
-`SpectraQL` translates `RTMIN`/`RTMAX` into a `filterRt()` call, which
-`MsBackendParquet` answers from its in-memory metadata index (and records
-as a DuckDB predicate for any later peak access). Conditions combine with
-`AND`, and queries are case insensitive:
+`mzMLToParquet()` imports MS data via `MsBackendMzR()` and writes the
+spectra metadata together with the `mz`/`intensity` values as Parquet
+`list<double>` columns.
 
-```{r ql-polarity}
-query(sps, "query * where rtmin = 200 and rtmax = 300 and polarity = positive")
+# Accessing data
+
+`spectraData()`, `peaksData()`, `mz()`, `intensity()` and related
+methods work the same way as for any other `MsBackend`. The spectra
+variables of the dataset are:
+
+```{r spectra-variables}
+spectraVariables(sps)
 ```
 
-Spectra can also be selected by acquisition number with `SCANMIN`/`SCANMAX`:
+Values are returned as usual, with the peak data read from disk on
+demand:
 
-```{r ql-scan}
-query(sps, "QUERY * WHERE SCANMIN = 100 AND SCANMAX = 200")
+```{r access}
+spectraData(sps, c("msLevel", "rtime", "precursorMz"))
+
+head(peaksData(sps)[[1L]])
+
+head(tic(sps))
 ```
 
-## Selecting on precursor m/z
+# Filtering
 
-`MS2PREC` selects MS2 spectra by precursor m/z. Mass accuracy is given with
-the optional `TOLERANCEPPM` and `TOLERANCEMZ` fields, which default to `0`:
+Filter methods are translated into DuckDB SQL predicates that are pushed
+down to the Parquet scan. DuckDB prunes whole row groups using their
+min/max statistics, and skips whole partitions for Hive-partitioned
+datasets, so a range or set filter reads only the data it needs. When
+the filter column is held in the in-memory metadata index (see *The
+in-memory metadata cache* below), the predicate is evaluated in memory
+instead.
 
-```{r ql-prec}
-query(sps, "QUERY * WHERE MS2PREC = 278.093:TOLERANCEPPM=30")
+Selecting spectra by MS level and by retention time, which is given in
+seconds:
+
+```{r filter-basic}
+filterMsLevel(sps, 2L)
+
+filterRt(sps, c(200, 300))
 ```
 
-Several values can be combined with `OR`. This becomes a single
-`filterPrecursorMzValues()` call, i.e. one OR-ed predicate and one scan
-rather than one scan per value:
+Filters return a `Spectra` object and can be chained. Each call narrows
+the predicate rather than reading data, so the combination is answered
+by a single scan:
 
-```{r ql-prec-or}
-query(sps, "QUERY * WHERE MS2PREC = (278.093 OR 124.086):TOLERANCEMZ=0.01")
+```{r filter-chained}
+sps |>
+    filterRt(c(200, 300)) |>
+    filterMsLevel(2L) |>
+    length()
 ```
 
-Combining a retention time window with a precursor condition narrows the
-selection to the few MS2 spectra of that precursor acquired in the window:
+MS2 spectra can be selected by precursor m/z, either over a range or
+against a set of values with a mass tolerance in ppm:
 
-```{r ql-combined}
-query(sps, paste("QUERY * WHERE RTMIN = 200 AND RTMAX = 300",
-                 "AND MS2PREC = 278.093:TOLERANCEPPM=30"))
+```{r filter-precursor}
+filterPrecursorMzRange(sps, c(278, 279))
+
+ms2 <- filterPrecursorMzValues(sps, 278.093, ppm = 30)
+ms2
+
+range(rtime(ms2))
 ```
 
-## Selecting on peaks
+`filterPrecursorMzValues()` accepts several values at once, which become
+one OR-ed predicate and therefore one scan rather than one scan per
+value:
 
-The conditions above only look at spectra variables. `MS1MZ`, `MS2PROD`
-(equivalently `MS2MZ`) and `MS2NL` instead inspect the peaks themselves, so
-these queries read peak data from the Parquet dataset.
-
-`MS1MZ` keeps MS1 spectra that contain a peak with the given m/z:
-
-```{r ql-ms1mz}
-query(sps, "QUERY * WHERE MS1MZ = 219.026:TOLERANCEMZ=0.01")
+```{r filter-precursor-values}
+filterPrecursorMzValues(sps, c(278.093, 124.086), tolerance = 0.01)
 ```
 
-`MS2PROD` does the same for fragment peaks of MS2 spectra, and pairs
-naturally with a precursor condition:
+None of the filters above read peak data. They are answered from the
+spectra variables, and the resulting predicate is carried into any later
+peak access.
 
-```{r ql-ms2prod}
-query(sps, "QUERY * WHERE MS2PROD = 164.054:TOLERANCEMZ=0.01")
+# Working with peaks
 
-query(sps, paste("QUERY * WHERE MS2PREC = 278.093:TOLERANCEPPM=30",
-                 "AND MS2PROD = 164.054:TOLERANCEMZ=0.01"))
+Peak data is read when it is asked for, and only for the spectra that
+survived the filters. The nine MS2 spectra selected above share one
+precursor, so their fragments can be compared directly:
+
+```{r peaks}
+lengths(ms2)
+
+pk <- peaksData(ms2)[[which.max(lengths(ms2))]]
+head(pk[order(-pk[, "intensity"]), ])
 ```
 
-`MS2NL` looks for a neutral loss from the precursor, i.e. a fragment at
-`precursorMz - <value>`:
+`containsMz()` from `r Biocpkg("Spectra")` reports which of those
+spectra contain a peak at a given m/z:
 
-```{r ql-ms2nl}
-query(sps, "QUERY * WHERE MS2NL = 114.041:TOLERANCEMZ=0.01")
+```{r contains-mz}
+which(containsMz(ms2, mz = 164.054, tolerance = 0.01))
 ```
 
-## Choosing what is returned
+Because the peaks are stored columnwise, DuckDB reads only the `mz` and
+`intensity` columns, and only the rows belonging to the selected
+spectra.
 
-The *type of data* part of the query decides what comes back. Besides `*`,
-`MS1DATA` and `MS2DATA` return the peak matrices of the selected MS1 or MS2
-spectra, `scaninfo(...)` returns their `spectraData()` and `scansum(...)`
-their total ion current:
+# Controlling the dataset layout
 
-```{r ql-what}
-pks <- query(sps, "QUERY MS1DATA WHERE RTMIN = 200 AND RTMAX = 300")
-length(pks)
-head(pks[[1L]], 3)
+`createMsBackendParquetDataset()` writes a dataset without opening it
+and exposes the layout options: the reader backend, chunk size,
+compression codec, Parquet row-group size, and Hive partitioning.
 
-sdta <- query(sps, "QUERY scaninfo(MS1DATA) WHERE RTMIN = 200 AND RTMAX = 300")
-sdta[1:3, c("msLevel", "rtime", "peaksCount", "totIonCurrent")]
+```{r create-ms-backend}
+path_part <- tempfile()
+createMsBackendParquetDataset(path = path_part, x = fl,
+                              partitioning = "msLevel",
+                              compression = "zstd")
 
-tic <- query(sps, "QUERY scansum(MS1DATA) WHERE RTMIN = 200 AND RTMAX = 300")
-head(tic)
+be_part <- backendInitialize(MsBackendParquet(), path = path_part)
+length(be_part)
 ```
 
-## What each query costs
+`partitioning` adds a further Hive level *below* the run.
+The partition directories carry mzPeak column names (see *How the
+dataset interfaces with mzPeak's model* below):
 
-The two groups of conditions behave very differently on this backend:
-
-- `RTMIN`/`RTMAX` and `MS2PREC` map to `filterRt()` and
-  `filterPrecursorMzValues()`. Both are served from the in-memory metadata
-  index, or pushed into the Parquet scan as a DuckDB predicate. No peak
-  data is touched at all.
-- `POLARITY` and `SCANMIN`/`SCANMAX` are resolved from spectra variables,
-  which are equally cheap.
-- `MS1MZ`, `MS2PROD`, `MS2NL`, and any result of type `MS1DATA`,
-  `MS2DATA` or `scansum(...)` need the peaks. Here the columnar layout
-  pays off: DuckDB reads only the `mz`/`intensity` columns, and only for
-  the rows that survived the other conditions.
-
-The timings for this query suite across the on-disk backends
-are summarised in the *Performance* section below.
-
-# The in-memory metadata cache
-
-The non-peak spectra variables are typically small compared to the peak
-data, so `MsBackendParquet` keeps them in a bounded, read-through
-in-memory index. The cache is held at the package level, keyed by
-dataset path and shared by every backend over that dataset (so it is
-independent of the individual, serialisable backend objects). It is
-warmed on `backendInitialize()` and dropped automatically whenever the
-dataset on disk is (re-)written. It is entirely separate from the
-user-modified variables tracked by `MsBackendCached`, which always take
-precedence.
-
-The cache is controlled through three options (shown with their
-defaults):
-
-```{r options, eval = FALSE}
-# Enable ("auto", the default) or disable ("off") the metadata cache.
-options(MsBackendParquet.cacheMetadata = "auto")
-
-# Columns held by default (the ones the optimised filters need).
-options(MsBackendParquet.cacheColumns =
-            c("msLevel", "rtime", "precursorMz", "dataOrigin"))
-
-# Budget in cells (rows x columns); ~5e7 is roughly 400 MB of doubles.
-# Requests over budget quietly fall back to reading from disk.
-options(MsBackendParquet.cacheMaxCells = 5e7)
+```{r partition-dirs}
+list.files(list.files(file.path(path_part, "spectra"), full.names = TRUE))
 ```
 
-Two further options tune the underlying DuckDB session:
-`MsBackendParquet.threads` (maps to DuckDB's `threads`) and
-`MsBackendParquet.memoryLimit` (maps to `memory_limit`). Both default to
-DuckDB's own defaults when unset.
-
-# Performance
-
-Storing the peaks as columnar `list<double>` values lets DuckDB skip
-whole row groups when a query touches only part of the data, while
-projection and predicate push-down keep both the columns and rows read
-to a minimum. Combined with the in-memory metadata index, this makes
-metadata filters roughly as fast as an in-memory backend while the peak
-storage stays on disk.
-
-Across the SpectraQL query suite over 380,100 spectra (50 mzML files),
-the Parquet backend is the fastest of the on-disk `Spectra` backends on
-5 of 7 queries (medians in ms, lower is better):
-
-| query | parquet | mzR | HDF5 | SQL |
-|---|---|---|---|---|
-| `RTMIN`/`RTMAX` range | **12.24** | 15.44 | 24.05 | 380.19 |
-| narrow RT range | 11.23 | **5.33** | 14.76 | 348.17 |
-| precursor m/z ± ppm | **14.09** | 21.66 | 28.66 | 336.33 |
-| RT and precursor | **12.56** | 17.25 | 27.75 | 389.22 |
-| MS1 peak data | **314.82** | 1510 | 1440 | 919.04 |
-| MS1 TIC | **506.79** | 1390 | 1490 | 890.82 |
-| scan info | 26.09 | **17.27** | 22.30 | 718.91 |
-
-The benchmark scripts live in
-[`inst/benchmarks/`](https://github.com/computational-metabolomics/MsBackendParquet/tree/main/inst/benchmarks);
-see `inst/benchmarks/performance.md` for the full numbers, the
-configuration sweeps over the tunable options, and the design
-considerations behind them.
+The same function writes an existing `DataFrame` of spectra data when it
+is passed as `data` instead of `x`.
 
 # Querying collections of mzPeak archives
 
 [mzPeak](https://github.com/HUPO-PSI/mzPeak) is the HUPO-PSI successor to
 mzML. An mzPeak *archive* holds **one MS run** as a folder (or an
-uncompressed ZIP) of Parquet files plus a JSON manifest naming them. That 
+uncompressed ZIP) of Parquet files plus a JSON manifest naming them. That
 structure is well suited to distributing and archiving individual runs,
-but inefficient for queries spanning thousands of runs. 
-Answering such a query would require opening and parsing each archive and its manifest.
+but inefficient for queries spanning thousands of runs.
+Answering such a query would require opening and parsing each archive and
+its manifest.
 
-`MsBackendParquet` bridges the two. `createMzPeakDataset()` registers a set
-of archives as one dataset:
+`MsBackendParquet` bridges the two. `createMzPeakDataset()` registers a
+set of archives as one dataset. The package ships two small archives for
+this purpose:
 
-```{r create-mzpeak-dataset, eval = FALSE}
-library(Spectra)
-library(MsBackendParquet)
+```{r create-mzpeak-dataset}
+archives <- system.file("extdata", c("QC01.mzpeak", "QC02.mzpeak"),
+                        package = "MsBackendParquet")
 
-path <- tempfile()
-createMzPeakDataset(c("QC01.mzpeak", "QC02.mzpeak"), path = path)
-
-be <- backendInitialize(MsBackendParquet(), path = path)
-sps <- Spectra(be)
+qc_path <- tempfile()
+createMzPeakDataset(archives[1L], path = qc_path, verbose = FALSE)
 ```
 
-**The archives are neither modified nor copied.** Ingest reads each
-archive's manifest, its spectrum metadata table and its scan / precursor /
-selected-ion side tables, and writes a small derived index next to them (
-around 3% of the size of the archives). It never reads a byte of signal data,
-so the cost scales with the number of spectra rather than the size of the
-data. Peaks are then read from the archives themselves, on demand.
+Further archives join the same dataset later. Only the index grows:
+
+```{r add-mzpeak-archives}
+addMzPeakArchives(qc_path, archives[2L], verbose = FALSE)
+
+be_qc <- backendInitialize(MsBackendParquet(), path = qc_path)
+sps_qc <- Spectra(be_qc)
+sps_qc
+
+table(basename(dataOrigin(sps_qc)))
+```
+
+With two runs in the dataset, `filterDataOrigin()` selects one of them:
+
+```{r filter-data-origin}
+filterDataOrigin(sps_qc, grep("QC02", dataOrigin(sps_qc), value = TRUE)[1L])
+```
+
+The archives are neither modified nor copied. Ingest reads each
+archive's manifest, its spectrum metadata table and its scan, precursor
+and selected-ion side tables, and writes a small derived index next to
+them, around 3% of the size of the archives. It never reads a byte of
+signal data, so the cost scales with the number of spectra rather than
+the size of the data. Peaks are then read from the archives themselves,
+on demand. Pass `link = "copy"` to place a copy of each archive inside
+the dataset directory instead of referencing it in place.
 
 Because the archives stay exactly as they were, they remain readable by
 every other mzPeak tool, and exporting a run back out of the dataset is a
@@ -430,32 +284,34 @@ directory copy rather than a conversion.
 
 ## How the dataset interfaces with mzPeak's model
 
-Several aspects of the data are translated or transformed on input. It is therefore important to understand exactly what changes occur.
+Several aspects of the data are translated or transformed on input, so it
+is worth being precise about what changes.
 
 - **Units and names.** mzPeak stores retention time as `time` in *minutes*;
   `Spectra` expects `rtime` in *seconds*. The conversion, and every other
   column rename and re-encoding (`scan_polarity` ±1, `spectrum_representation`
-  as a CURIE, the isolation window as a target plus offsets, ...), happens in
-  a single SQL view. The same view serves a natively converted dataset: its
-  `spectra/` files are written with mzPeak's column names and encodings too,
-  so both kinds are directly comparable and either can be exported back to an
-  archive mechanically. `spectrum_index` is always the dataset's unique
-  0-based key; a spectrum's position within its source file (`scanIndex`,
-  which restarts per file) is kept in `scan_index`. The package adds only a
-  handful of reserved columns (`spectrum_id_`, `acquisition_num_`, the `n_*`
-  counts).
+  as a CURIE, the isolation window as a target plus offsets, and so on),
+  happens in a single SQL view. The same view serves a natively converted
+  dataset: its `spectra/` files are written with mzPeak's column names and
+  encodings too, so both kinds are directly comparable and either can be
+  exported back to an archive mechanically. `spectrum_index` is always the
+  dataset's unique 0-based key; a spectrum's position within its source file
+  (`scanIndex`, which restarts per file) is kept in `scan_index`. The package
+  adds only a handful of reserved columns (`spectrum_id_`, `acquisition_num_`,
+  the `n_*` counts).
 - **Flattening.** mzPeak keeps scans, precursors and selected ions in
   separate tables linked back to the spectrum by a foreign key. The index
   takes the first of each, and records how many there were in `n_scans`,
-  `n_selected_ions` and `n_precursors`. Nothing is lost — the archive still
-  holds the full detail — but a spectrum with several scans is summarised in
-  the index.
+  `n_selected_ions` and `n_precursors`. The archive still holds the full
+  detail, but a spectrum with several scans is summarised in the index.
 - **Profile and centroid.** mzPeak can hold both representations of the same
-  spectrum, in separate files. Choose with `representation`:
+  spectrum, in separate files. Choose with `representation`, which defaults
+  to `"auto"`:
 
-```{r mzpeak-repr, eval = FALSE}
-be <- backendInitialize(MsBackendParquet(), path = path,
-                        representation = "centroid")
+```{r mzpeak-repr}
+be_centroid <- backendInitialize(MsBackendParquet(), path = qc_path,
+                                 representation = "centroid")
+be_centroid
 ```
 
 - **Differing schemas.** Two perfectly valid archives often have different
@@ -468,32 +324,119 @@ message; only the *point* layout is supported so far.
 
 ## Searching for peaks across runs
 
-Filters on spectra variables work as they do for any other dataset. Finding
-spectra that *contain a peak* at a given m/z is different: it has to look at
-the signal, and mzPeak stores signal ordered by spectrum, which means a
-filter on m/z cannot skip anything (every block of rows spans the whole mass
-range).
+Filters on spectra variables work as they do for any other dataset.
+Finding spectra that *contain a peak* at a given m/z is different: it has
+to look at the signal, and mzPeak stores signal ordered by spectrum,
+which means a filter on m/z cannot skip anything, because every block of
+rows spans the whole mass range.
 
-`filterContainsMz()` runs that search inside the storage engine rather than
-pulling peaks into R:
+`filterContainsMz()` runs that search inside the storage engine rather
+than pulling peaks into R:
 
-```{r filter-contains-mz, eval = FALSE}
-hits <- filterContainsMz(be, 278.093, ppm = 20)
+```{r filter-contains-mz}
+hits <- filterContainsMz(be_qc, c(201, 10101), ppm = 20)
+length(hits)
+
+basename(dataOrigin(hits))
 ```
 
-For datasets where this is a common query, build an m/z-ordered copy of the
-signal. Sorting is what makes the block statistics useful, so the same
-search then reads a handful of blocks instead of everything:
+For datasets where this is a common query, build an m/z-ordered copy of
+the signal. Sorting is what makes the block statistics useful, so the
+same search then reads a handful of blocks instead of everything:
 
-```{r build-projection, eval = FALSE}
-buildProjection(path) # optional, per-run, deletable
+```{r build-projection}
+buildProjection(qc_path, verbose = FALSE)
+
+length(filterContainsMz(be_qc, 201, ppm = 20))
 ```
 
-On a 5-million-point test dataset this made `filterContainsMz()` around eight
-times faster. A projection is a **cache**: it is a second copy of the signal
-and so costs roughly as much disk again, it can be dropped with
-`dropProjection()`, and results are identical with or without it — only the
-speed changes. Build it per run, for the runs you query often.
+On a 5-million-point test dataset this made `filterContainsMz()` around
+eight times faster. A projection is a cache: it is a derived copy of the
+signal and so costs roughly as much disk again, it can be dropped with
+`dropProjection()`, and results are identical with or without it. Only
+the performance changes. Build it per run, for the runs you query often.
+
+```{r drop-projection}
+dropProjection(qc_path, verbose = FALSE)
+```
+
+# Sample metadata
+
+An experiment records factors about the *sample* a run came from, such as
+subject, timepoint, treatment group or injection order, that are not in
+the raw data. `runData()` stores them in the dataset, one row per run,
+keyed by `run_id`.
+
+```{r run-data}
+runData(be_qc) <- data.frame(run_id = c("QC01", "QC02"),
+                             subject = c("S1", "S2"),
+                             timepoint = c(0L, 6L))
+runVariables(be_qc)
+```
+
+The columns then behave like any other spectra variable:
+
+```{r run-data-access}
+spectraData(be_qc, c("rtime", "subject", "timepoint"))
+```
+
+and `filterSampleData()` selects on them:
+
+```{r filter-sample-data}
+filterSampleData(be_qc, timepoint == 6)
+```
+
+The sample metadata is held once per run, not copied onto every spectrum.
+Each run owns a
+*contiguous block* of `spectrum_id_`, so `timepoint == 6` is exactly a
+range of ids, and `filterSampleData()` resolves it against a table of a
+few thousand rows rather than reading a column of a few million. The
+resulting predicate is a range on the column the files are ordered by,
+which is the case Parquet's row-group statistics prune best, and it is
+carried into any later `peaksData()`.
+
+Keeping it out of the per-spectrum data also makes it correctable. Sample
+metadata is the one thing that reliably changes after ingest. Rewriting it
+touches a few kilobytes and leaves the signal, and any projections built
+over it, untouched.
+
+Runs with no row get `NA`, so metadata covering only some runs is fine. To
+go further, and link samples to spectra in an experiment-wide object, pass
+the table to `r Biocpkg("MsExperiment")`'s `linkSampleData()`, which keys
+on `dataOrigin` or `run_id`.
+
+# The in-memory metadata cache
+
+The non-peak spectra variables are typically small compared to the peak
+data, so `MsBackendParquet` keeps them in a bounded, read-through
+in-memory index. The cache is held at the package level, keyed by
+dataset path and shared by every backend over that dataset, so it is
+independent of the individual, serialisable backend objects. It is
+warmed on `backendInitialize()` and dropped automatically whenever the
+dataset on disk is (re-)written. It is entirely separate from the
+user-modified variables tracked by `MsBackendCached`, which always take
+precedence.
+
+The cache is controlled through three options, shown here with their
+defaults:
+
+```{r options}
+## Enable ("auto", the default) or disable ("off") the metadata cache.
+options(MsBackendParquet.cacheMetadata = "auto")
+
+## Columns held by default (the ones the optimised filters need).
+options(MsBackendParquet.cacheColumns =
+            c("msLevel", "rtime", "precursorMz", "dataOrigin"))
+
+## Budget in cells (rows x columns); 5e7 is roughly 400 MB of doubles.
+## Requests over budget quietly fall back to reading from disk.
+options(MsBackendParquet.cacheMaxCells = 5e7)
+```
+
+Two further options tune the underlying DuckDB session:
+`MsBackendParquet.threads` (maps to DuckDB's `threads`) and
+`MsBackendParquet.memoryLimit` (maps to `memory_limit`). Both default to
+DuckDB's own defaults when unset.
 
 # Streaming large mzML files
 
@@ -504,17 +447,45 @@ whole chunk of peaks in memory before writing it to Parquet. The
 batches of spectra directly from `mzR::openMSfile()` into Apache
 Arrow's incremental `ParquetFileWriter`:
 
-```{r mzml-to-parquet-streaming, eval = FALSE}
-be <- mzMLToParquet("huge-sample.mzML",
-                    path = tempfile(),
-                    engine = "mzr",
-                    batch_size = 1000L)
+```{r mzml-to-parquet-streaming}
+be_stream <- mzMLToParquet(fl, path = tempfile(),
+                           engine = "mzr", batch_size = 1000L,
+                           verbose = FALSE)
+length(be_stream)
 ```
 
 Memory use stays bounded by `batch_size * mean(peaks per spectrum)`,
 regardless of total file size. The streaming engine processes files
-serially and requires the `mzR` package; it does not honour `BPPARAM`
-or `chunksize`.
+serially and requires the `mzR` package.
+
+# Performance
+
+Storing the peaks as columnar `list<double>` values lets DuckDB skip
+whole row groups when a query touches only part of the data, while
+projection and predicate push-down keep both the columns and rows read
+to a minimum. Combined with the in-memory metadata index, this makes
+metadata filters roughly as fast as an in-memory backend while the peak
+storage stays on disk.
+
+Across a suite of seven queries over 380,100 spectra (50 mzML files),
+the Parquet backend is the fastest of the on-disk `Spectra` backends on
+5 of 7 queries (medians in ms, lower is better):
+
+| query | parquet | mzR | HDF5 | SQL |
+|---|---|---|---|---|
+| `filterRt()`, wide range | **12.24** | 15.44 | 24.05 | 380.19 |
+| `filterRt()`, narrow range | 11.23 | **5.33** | 14.76 | 348.17 |
+| `filterPrecursorMzValues()`, ppm | **14.09** | 21.66 | 28.66 | 336.33 |
+| `filterRt()` and `filterPrecursorMzValues()` | **12.56** | 17.25 | 27.75 | 389.22 |
+| `peaksData()` of MS1 spectra | **314.82** | 1510 | 1440 | 919.04 |
+| `tic()` of MS1 spectra | **506.79** | 1390 | 1490 | 890.82 |
+| `spectraData()` of MS1 spectra | 26.09 | **17.27** | 22.30 | 718.91 |
+
+The benchmark scripts live in
+[`inst/benchmarks/`](https://github.com/computational-metabolomics/MsBackendParquet/tree/main/inst/benchmarks);
+see `inst/benchmarks/performance.md` for the full numbers, the
+configuration sweeps over the tunable options, and the design
+considerations behind them.
 
 # Saving and reloading the backend
 

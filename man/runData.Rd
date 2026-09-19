@@ -4,7 +4,7 @@
 \alias{runData}
 \alias{runVariables}
 \alias{runData<-}
-\title{Per-run sample annotation}
+\title{Per-run sample metadata}
 \usage{
 runData(x)
 
@@ -16,37 +16,37 @@ runData(x) <- value
 \item{x}{dataset path, or an \code{\link[=MsBackendParquet]{MsBackendParquet()}} opened on one.}
 
 \item{value}{\code{data.frame} with a \code{run_id} column naming runs of the
-dataset, plus one column per annotation variable.}
+dataset, plus one column per sample metadata variable.}
 }
 \value{
-\code{runData()} a \code{data.frame} with one row per annotated run;
-\code{runVariables()} a \code{character} of annotation column names.
+\code{runData()} a \code{data.frame} with one row per described run;
+\code{runVariables()} a \code{character} of sample metadata column names.
 }
 \description{
-\code{runData()} reads, and \verb{runData<-()} writes, a dataset's per-run
-annotation: one row per run, keyed by \code{run_id}, holding whatever the
+\code{runData()} reads, and \verb{runData<-()} writes, a dataset's per-run sample
+metadata: one row per run, keyed by \code{run_id}, holding whatever the
 experiment records about the sample that run came from.
 
 A run is one MS run -- one mzPeak archive, or one converted source file --
-and owns a contiguous block of the dataset's \code{spectrum_id_}, so the
-annotation's columns become ordinary spectra variables and
+and owns a contiguous block of the dataset's \code{spectrum_id_}, so the sample
+metadata's columns become ordinary spectra variables and
 \code{\link[=filterSampleData]{filterSampleData()}} can select on them by id range rather than by reading
 a per-spectrum column.
 
-The annotation is written to \code{index/samples.parquet} and can be replaced at
-any time after ingest. Replacing it does not invalidate projections: it
-does not touch the signal.
+The sample metadata is written to \code{index/samples.parquet} and can be
+replaced at any time after ingest. Replacing it does not invalidate
+projections: it does not touch the signal.
 
-\code{runVariables()} lists the annotation columns.
+\code{runVariables()} lists the sample metadata columns.
 }
 \details{
 Column names are checked against the dataset's existing spectra variables
-and against the mzPeak column vocabulary. A run annotation column called
+and against the mzPeak column vocabulary. A sample metadata column called
 \code{time} or \code{id} would otherwise silently shadow the source of a core
 variable, so it is refused rather than accepted and later mis-read.
 
-Runs with no row in the table yield \code{NA}, so a partially annotated dataset
-is legal.
+Runs with no row in the table yield \code{NA}, so metadata covering only some
+of a dataset's runs is legal.
 }
 \examples{
 library(Spectra)

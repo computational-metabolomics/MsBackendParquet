@@ -87,7 +87,7 @@ directly.
 
 Each run — one mzPeak archive, or one converted source file — owns a
 contiguous block of the dataset's spectrum ids. `runData()` attaches the
-experiment's own annotation to those runs:
+experiment's own sample metadata to those runs:
 
 ```r
 runData(be) <- data.frame(run_id   = c("QC01", "QC02"),
@@ -98,7 +98,7 @@ be$timepoint                          # an ordinary spectra variable
 filterSampleData(be, timepoint == 6)  # resolved as an id range
 ```
 
-The annotation is stored once per run, not copied onto every spectrum, so a
+The sample metadata is stored once per run, not copied onto every spectrum, so a
 filter on it becomes a range predicate on the column the files are sorted by
 — the case Parquet's row-group statistics prune best — without reading a
 per-spectrum column. It can also be corrected at any time without rewriting

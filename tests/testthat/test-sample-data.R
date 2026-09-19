@@ -1,11 +1,11 @@
-## Per-run sample annotation lives in `index/samples.parquet` and is expanded
+## Per-run sample metadata lives in `index/samples.parquet` and is expanded
 ## in R from the manifest's id blocks. It is never a column of the DuckDB
 ## view, so these tests pin both halves: that it reads back as an ordinary
 ## spectra variable, and that it never leaks into the per-spectrum paths.
 
 ## Note the assignment target must be a name: `runData(.path(be)) <- x` is a
 ## nested replacement and R would look for `.path<-`.
-.annotated <- function() {
+.with_sample_data <- function() {
     be <- .make_test_backend()
     runData(be) <- data.frame(
         run_id = c("file-a", "file-b"),
@@ -16,8 +16,8 @@
     be
 }
 
-test_that("run annotation round trips with its types", {
-    be <- .annotated()
+test_that("sample metadata round trips with its types", {
+    be <- .with_sample_data()
     sd <- runData(be)
     expect_identical(sd$run_id, c("file-a", "file-b"))
     expect_identical(sd$timepoint, c(0L, 6L))     # integer, not "0"
@@ -28,15 +28,15 @@ test_that("run annotation round trips with its types", {
     expect_identical(runData(.path(be)), sd)
 })
 
-test_that("a dataset with no annotation is not a special case", {
+test_that("a dataset with no sample metadata is not a special case", {
     be <- .make_test_backend()
     expect_identical(nrow(runData(be)), 0L)
     expect_identical(runVariables(be), character())
-    expect_error(filterSampleData(be, timepoint == 6), "no run annotation")
+    expect_error(filterSampleData(be, timepoint == 6), "no sample metadata")
 })
 
-test_that("annotation columns become ordinary spectra variables", {
-    be <- .annotated()
+test_that("sample metadata columns become ordinary spectra variables", {
+    be <- .with_sample_data()
     expect_true(all(c("subject", "timepoint", "ratio") %in%
                     spectraVariables(be)))
 
@@ -53,15 +53,15 @@ test_that("annotation columns become ordinary spectra variables", {
     expect_equal(be$timepoint, c(0L, 0L, 6L))
 })
 
-test_that("annotation follows subsetting and reordering", {
-    be <- .annotated()
+test_that("sample metadata follows subsetting and reordering", {
+    be <- .with_sample_data()
     sub <- be[c(3L, 1L)]
     expect_equal(sub$timepoint, c(6L, 0L))
     expect_equal(sub$subject, c("S2", "S1"))
     expect_identical(nrow(spectraData(be[integer()], "timepoint")), 0L)
 })
 
-test_that("runs without an annotation row yield NA", {
+test_that("runs without a sample metadata row yield NA", {
     be <- .make_test_backend()
     runData(be) <- data.frame(run_id = "file-a", timepoint = 3L)
     expect_equal(be$timepoint, c(3L, 3L, NA_integer_))
@@ -81,7 +81,7 @@ test_that("an unknown run_id is refused", {
         "must be unique")
 })
 
-test_that("an annotation column that would shadow a spectra variable is refused", {
+test_that("a sample metadata column that would shadow a spectra variable is refused", {
     be <- .make_test_backend()
     ## `rtime` is a spectra variable; `time` is the on-disk column the view
     ## consumes to build it, so it would be shadowed rather than reported.
@@ -93,7 +93,7 @@ test_that("an annotation column that would shadow a spectra variable is refused"
 })
 
 test_that("filterSampleData agrees with filtering on the values", {
-    be <- .annotated()
+    be <- .with_sample_data()
     f <- filterSampleData(be, timepoint == 6)
     expect_equal(.ids(f), 3L)
     expect_equal(f$subject, "S2")
@@ -108,11 +108,11 @@ test_that("filterSampleData agrees with filtering on the values", {
     ## Variables not in the table come from the calling frame.
     cutoff <- 3
     expect_equal(.ids(filterSampleData(be, timepoint > cutoff)), 3L)
-    expect_error(filterSampleData(be, timepoint), "one logical value per run")
+    expect_error(filterSampleData(be, timepoint), "one logical value per sample metadata row")
 })
 
 test_that("a run filter carries a range predicate on the sort key", {
-    be <- .annotated()
+    be <- .with_sample_data()
     f <- filterSampleData(be, timepoint == 0)
     ## The point of resolving through the manifest: the predicate is a range
     ## on `spectrum_id_`, which is what the files are ordered by, so a later
@@ -128,9 +128,9 @@ test_that("a run filter carries a range predicate on the sort key", {
     expect_equal(length(all_runs), 3L)
 })
 
-test_that("annotation never enters the per-spectrum metadata cache", {
+test_that("sample metadata never enters the per-spectrum metadata cache", {
     .meta_cache_clear()
-    be <- .annotated()
+    be <- .with_sample_data()
     invisible(be$timepoint)
     invisible(filterSampleData(be, timepoint == 6))
     st <- .meta_state[[.path(be)]]
@@ -171,7 +171,7 @@ test_that("filterDataOrigin still works when runs span several origins", {
     expect_equal(.ids(filterDataOrigin(be, "b")), c(2L, 4L))
 })
 
-test_that("annotation works on an mzPeak-backed dataset and survives rewrites", {
+test_that("sample metadata works on an mzPeak-backed dataset and survives rewrites", {
     root <- tempfile()
     dir.create(root)
     a <- file.path(root, "P1")
@@ -190,7 +190,7 @@ test_that("annotation works on an mzPeak-backed dataset and survives rewrites", 
     expect_equal(.ids(f), 7:10)
     expect_equal(peaksData(f), peaksData(be[7:10]))
 
-    ## A projection is a cache over the signal; correcting an annotation must
+    ## A projection is a cache over the signal; correcting sample metadata must
     ## not throw it away.
     buildProjection(ds, verbose = FALSE)
     expect_true(.manifest_has_projection(.manifest_read(ds), "mzsorted",
@@ -204,8 +204,8 @@ test_that("annotation works on an mzPeak-backed dataset and survives rewrites", 
     expect_equal(.ids(filterSampleData(be, timepoint == 12)), 7:10)
 })
 
-test_that("rewriting the annotation invalidates what readers hold", {
-    be <- .annotated()
+test_that("rewriting the sample metadata invalidates what readers hold", {
+    be <- .with_sample_data()
     expect_equal(be$timepoint, c(0L, 0L, 6L))
     path <- .path(be)
     runData(be) <- data.frame(run_id = "file-b", timepoint = 99L)

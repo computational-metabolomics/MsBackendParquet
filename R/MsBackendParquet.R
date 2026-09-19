@@ -385,7 +385,7 @@ setMethod(
         object@.dataset_vars <- .dataset_var_names(path)
         object@.peaks_vars <- if (.dataset_kind(path) == "mzpeak")
             c("mz", "intensity") else .dataset_peak_names(path)
-        # Per-run annotation is a spectra variable to the user but is never a
+        # Per-run metadata is a spectra variable to the user but is never a
         # column of the view: it is held once per run and expanded in R, so
         # it has to be tracked apart from the dataset's own columns.
         object@.sample_vars <- .sample_var_names(path)
@@ -658,11 +658,6 @@ setMethod(
 
         dataOrigin <- as.character(dataOrigin)
         runs <- .runs_by_uid(.path(object))
-        # A run is one source of spectra, so `dataOrigin` is a property of
-        # the run: the manifest answers this from the id blocks without
-        # reading a per-spectrum column at all. The exception is a dataset
-        # whose origins could not be cut into contiguous blocks -- one run
-        # spans several of them, and there the column is the only answer.
         object <- if (!anyNA(runs$source) && !anyDuplicated(runs$source)) {
             .filter_runs(object, runs$run_id[runs$source %in% dataOrigin])
         } else {

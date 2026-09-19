@@ -2,7 +2,7 @@
 % Please edit documentation in R/sample-data.R
 \name{filterSampleData}
 \alias{filterSampleData}
-\title{Select spectra by their run's sample annotation}
+\title{Select spectra by their run's sample metadata}
 \usage{
 filterSampleData(object, expr)
 }
@@ -21,7 +21,7 @@ looked up in the calling frame.}
 expression evaluated against the dataset's \code{\link[=runData]{runData()}} table.
 
 Because every run owns a contiguous block of \code{spectrum_id_}, the condition
-is resolved against the (small) annotation table in R and turned into a
+is resolved against the (small) sample metadata table in R and turned into a
 range predicate over those blocks. No per-spectrum column is read, and the
 predicate is carried forward so a subsequent \code{peaksData()} prunes Parquet
 row groups on the dataset's sort key.
@@ -30,5 +30,5 @@ row groups on the dataset's sort key.
 ## See `?runData` for a worked example.
 }
 \seealso{
-\code{\link[=runData]{runData()}} to set the annotation being filtered on.
+\code{\link[=runData]{runData()}} to set the sample metadata being filtered on.
 }

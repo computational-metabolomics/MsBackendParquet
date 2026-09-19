@@ -48,11 +48,7 @@
           "acquisition_num_", "INTEGER"),
         r("acquisitionNum", 'CAST("spectrum_index" AS INTEGER)',
           "spectrum_index", "INTEGER"),
-        # `spectrum_index` is the run's own 0-based key, and a run is one
-        # source file, so it already counts from 0 within that file. A
-        # dataset that still records the acquisition-order position it had in
-        # its source keeps it in `scan_index` and that wins, since it survives
-        # a conversion that dropped or reordered spectra.
+        # `spectrum_index` is the run's own 0-based key.
         r("scanIndex", 'CAST("scan_index" AS INTEGER)',
           "scan_index", "INTEGER"),
         r("scanIndex", 'CAST("spectrum_index" AS INTEGER)',
@@ -213,9 +209,7 @@
 
     # The read view injects `dataStorage` as the dataset path, and derives
     # `run_id` from the directory a part sits in. Both would otherwise survive
-    # a round trip through `spectraData()` and be written back as real
-    # columns -- and a `run_id` column beside a `run_id=` directory is a
-    # collision the reader cannot resolve.
+    # a round trip through `spectraData()` and be written back as real columns.
     df[["dataStorage"]] <- NULL
     df[["run_id"]] <- NULL
 
@@ -228,13 +222,13 @@
     }
 
     # mzPeak's `spectrum_index` MUST be the run's unique, monotonic 0-based
-    # key -- never a per-file `scanIndex`, which may repeat. `spectrum_id_` is
-    # unique across the whole dataset and allocated in one contiguous block per
-    # run, so subtracting the block's first id makes it run-local, which is
-    # what an mzPeak archive's own index means.
-    if (!is.null(df[["spectrum_id_"]]))
+    # key. `spectrum_id_` is unique across the whole dataset and allocated
+    # in one contiguous block per run, so subtracting the block's first id
+    # makes it run-local, which is what an mzPeak archive's own index means.
+    if (!is.null(df[["spectrum_id_"]])) {
         df[["spectrum_index"]] <- as.integer(df[["spectrum_id_"]]) -
             as.integer(uid_base)
+    }
 
     df
 }

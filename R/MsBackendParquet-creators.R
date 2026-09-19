@@ -21,13 +21,10 @@
 #' dataset compact.
 #'
 #' Each source file becomes its own run, written to
-#' `<path>/spectra/run_id=<id>/`, so a filter that selects whole files
-#' already prunes at the directory level. If `partitioning` is supplied
+#' `<path>/spectra/run_id=<id>/`. If `partitioning` is supplied
 #' (e.g. `partitioning = "msLevel"`), Apache Arrow adds a further Hive level
 #' below the run, which typically enables Arrow's partition pruning when
 #' filtering and can substantially speed up access to large datasets.
-#' `"dataOrigin"` is not useful as a key, since it is constant within a run;
-#' it is dropped with a warning.
 #'
 #' @param path `character(1)` with the path to the dataset directory.
 #'     The directory must not already contain a `MsBackendParquet`
@@ -377,12 +374,6 @@ mzMLToParquet <- function(
 #' State threaded through a native conversion: the last `spectrum_id_` handed
 #' out, the runs recorded so far, and the partitioning actually used.
 #'
-#' One counter for the whole conversion is what makes the id blocks tile
-#' `1..N` without any writer having to negotiate with another. The
-#' partitioning rides along because only the writer knows whether it ended up
-#' dropping a redundant key, and the manifest has to record what was written
-#' rather than what was asked for.
-#'
 #' @noRd
 .native_acc <- function(partitioning = character()) {
     list(next_id = 0L, runs = list(), partitioning = partitioning)
@@ -407,14 +398,6 @@ mzMLToParquet <- function(
 }
 
 #' Drop a partitioning key that the per-run layout has already made redundant.
-#'
-#' Inside a run, `data_origin` has exactly one value, so partitioning on it
-#' buys a directory level and no pruning that `run_id=` does not already give
-#' -- while Arrow percent-escapes the absolute source path into a single path
-#' component that the extra nesting can push towards the file system's limit.
-#' Only worth keeping when the write fell back to one run spanning several
-#' origins, where the key still separates something.
-#'
 #' @noRd
 .effective_partitioning <- function(partitioning, blocked) {
     if (!blocked || !"data_origin" %in% partitioning)
@@ -499,8 +482,7 @@ mzMLToParquet <- function(
 
     # `spectrum_id_` is already `seq_len(n)` and defines the order the caller
     # gets its spectra back in, so the runs are read off that order rather
-    # than imposed on it: an interleaved `dataOrigin` becomes one run, never a
-    # silent permutation of a public constructor's input.
+    # than imposed on it: an interleaved `dataOrigin` becomes one run.
     blocks <- if (had_origin) .origin_blocks(data$dataOrigin) else NULL
     blocked <- !is.null(blocks)
     if (!blocked) {
@@ -528,12 +510,6 @@ mzMLToParquet <- function(
 
 #' Insert one chunk of a `Spectra` object, cutting it into one run per source
 #' file.
-#'
-#' `MsBackendMzR` lays its rows out grouped by file, in file order, so the cut
-#' is a no-op reordering-wise. A third-party `backend` may sort or omit
-#' `dataOrigin`, though, and the chunk is still written before the next one
-#' starts, so falling back to one run per chunk keeps the ids contiguous and
-#' costs only a coarser layout.
 #'
 #' @return the accumulator, updated.
 #'

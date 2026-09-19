@@ -1,3 +1,15 @@
+# MsBackendParquet 0.99.4
+
+## New features
+
+- Per-run sample metadata. `runData()` reads and `runData<-()` writes a table of whatever the experiment records about the sample a run came from, one row per run, keyed by `run_id` and stored in `index/samples.parquet`. Its columns become ordinary spectra variables, `runVariables()` lists them, and `filterSampleData()` selects on them. Because a run owns a contiguous block of `spectrum_id_`, such a filter resolves to an id range over the run table rather than a read of a per-spectrum column, and the resulting predicate is carried into any later `peaksData()`. Replacing the table rewrites a few kilobytes and does not touch the signal, so projections survive a correction.
+
+## Documentation
+
+- The vignette is rewritten around a real data set. It converts `MsDataHub::PestMix1_DDA.mzML()` with `mzMLToParquet()` and works with the result throughout, and the mzPeak, projection and sample metadata sections run against the `QC01.mzpeak` / `QC02.mzpeak` archives shipped in `inst/extdata`. Every chunk is now evaluated when the package is built; none is marked `eval = FALSE`.
+
+- Filtering is demonstrated with the `Spectra` filter methods (`filterMsLevel()`, `filterRt()`, `filterPrecursorMzRange()`, `filterPrecursorMzValues()`, `filterDataOrigin()`) and peak access with `peaksData()`, `tic()` and `containsMz()`, in place of the previous MassQL section built on `SpectraQL`.
+
 # MsBackendParquet 0.99.3
 
 ## Internal

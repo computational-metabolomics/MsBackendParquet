@@ -58,16 +58,26 @@
 
 #' Make run ids unique, comparing them case-insensitively.
 #'
-#' Two source files can share a basename in different directories, and
-#' `QC01.mzML` and `qc01.mzML` are different files on Linux but the same
-#' directory on macOS and Windows. Either way the two runs would land in one
-#' `run_id=` directory, interleaving their Parquet parts: the ids stay globally
-#' right, but each run's recorded `n_spectra` becomes a fiction relative to what
-#' its directory actually holds, and any later per-run operation corrupts the
-#' other run. So fold the case before deduplicating, and apply the suffix
-#' `make.unique()` chose back to the original spelling.
+#' A run id becomes a `run_id=<id>` directory name, so it must be unique within
+#' a dataset. Ids taken from file basenames can repeat across source
+#' directories, and on macOS and Windows `QC01` and `qc01` name the same
+#' directory even though they are distinct strings.
 #'
-#' `taken` lets a caller reserve ids that are already in a manifest.
+#' Either case would put two runs in one directory with their Parquet parts
+#' interleaved. The `spectrum_id_` values stay correct, but a run's recorded
+#' `n_spectra` stops matching what its directory actually holds, so later
+#' per-run operations read or overwrite part of the other run.
+#'
+#' Ids are therefore folded to lower case before deduplication, and the suffix
+#' `make.unique()` chose is appended to the original spelling so the caller's
+#' capitalisation survives.
+#'
+#' @param ids candidate run ids, in write order.
+#'
+#' @param taken ids already recorded in the manifest, reserved so a separately
+#'     written chunk cannot reuse one.
+#'
+#' @return `ids`, with a suffix added where one was needed.
 #'
 #' @noRd
 .unique_run_ids <- function(ids, taken = character()) {
@@ -287,12 +297,6 @@
         layout = chr(function(r) r$signal$layout),
         profile = chr(function(r) r$signal$profile),
         centroid = chr(function(r) r$signal$centroid),
-        # What this run's spectra call their `dataOrigin`, or `NA` when the
-        # run does not have a single one. A native run records it explicitly,
-        # because `run_id` is a sanitised basename and cannot be turned back
-        # into it -- and records nothing when it spans several origins, which
-        # is what tells a caller to fall back to the per-spectrum column. An
-        # mzPeak run's is its archive directory, already recorded as `path`.
         source = ifelse(!is.na(src_v), src_v,
                         ifelse(kind_v == "mzpeak", path_v, NA_character_)),
         stringsAsFactors = FALSE)
@@ -318,7 +322,7 @@
 #'   `backendInitialize()` can build it arithmetically instead of scanning
 #'   every row on disk;
 #' - adding a run never renumbers an existing one, so ids stay stable and any
-#'   external annotation keyed on them survives.
+#'   external metadata keyed on them survives.
 #'
 #' @noRd
 .manifest_next_uid_base <- function(m) {
@@ -353,14 +357,7 @@
         kind = kind,
         path = path,
         n_spectra = as.integer(n_spectra),
-        # Taken from the caller when it already knows where this run's block
-        # starts. The default re-derives it, which walks every run entry, so a
-        # writer adding runs in a loop should pass it.
         uid_base = as.integer(uid_base),
-        # The generation at which this run's index was built. Projections
-        # record the value they were derived from, so re-ingesting one run
-        # invalidates only that run's caches -- adding an unrelated run does
-        # not.
         ingested_at = as.integer(m$generation),
         signal = signal,
         projections = stats::setNames(list(), character()))
@@ -370,14 +367,7 @@
 #' Write the manifest for a dataset converted from raw MS data files.
 #'
 #' One run per source file, each covering its own `spectra/run_id=<id>`
-#' directory, in the order they were written -- so the blocks of
-#' `spectrum_id_` they claim tile `1..N` with no gap.
-#'
-#' Called once, at the end of every conversion path. Writing it per run
-#' instead would be worse than useless: while there is no manifest,
-#' `.is_parquet_dataset()` is `FALSE` and an interrupted conversion fails
-#' closed, whereas a partial manifest is a readable dataset whose `seq_len(N)`
-#' silently addresses only the files that got as far as being recorded.
+#' directory, in the order they were written.
 #'
 #' @param runs `list` of `list(run_id, path, n_spectra)`, in write order.
 #'
@@ -399,10 +389,6 @@
             uid_base = base, source = r$source %||% NA_character_)
         base <- base + n
     }
-    # The writers count what they wrote; the dataset counts what is on disk.
-    # They can only disagree if a chunk was silently dropped, and then every
-    # `uid_base` past that point addresses the wrong rows -- which nothing
-    # downstream would notice, since ids stay a dense `seq_len(N)`.
     n_disk <- .dataset_n_spectra(path)
     if (!identical(.manifest_n_spectra(m), as.integer(n_disk)))
         stop("Wrote ", n_disk, " spectra but accounted for ",

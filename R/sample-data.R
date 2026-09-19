@@ -1,4 +1,4 @@
-# Per-run annotation: `index/samples.parquet`.
+# Per-run metadata: `index/samples.parquet`.
 #
 # One row per run, keyed by `run_id`, holding whatever the experiment calls a
 # sample -- subject, timepoint, group, injection order. It is stored once per
@@ -14,7 +14,7 @@
 # of a few million, and it leaves the bounded in-memory index
 # (`R/metadata-cache.R`) for variables that genuinely vary per spectrum.
 #
-# The other half is mutability. Sample annotation is the one thing that
+# The other half is mutability. Sample metadata is the one thing that
 # reliably changes after ingest -- a mislabelled vial, a clinical variable
 # that arrives months later. Held here, a correction rewrites a few kilobytes
 # and bumps the manifest generation. Copied into the index, it would rewrite
@@ -41,7 +41,7 @@
     invisible()
 }
 
-#' The run annotation for a dataset, read at most once per process.
+#' The sample metadata for a dataset, read at most once per process.
 #'
 #' Returns a zero-row `data.frame` with just `run_id` when the dataset has
 #' none, so callers never have to special-case its absence.
@@ -60,7 +60,7 @@
     out
 }
 
-#' Run annotation variables, i.e. the columns other than the key.
+#' Sample metadata variables, i.e. the columns other than the key.
 #'
 #' @noRd
 .sample_var_names <- function(path) {
@@ -143,7 +143,7 @@
     .filter_cached(object, keep, .runs_where(runs, sel))
 }
 
-#' Values of run annotation variables, one row per spectrum of `x`.
+#' Values of sample metadata variables, one row per spectrum of `x`.
 #'
 #' @noRd
 .sample_values <- function(x, columns) {
@@ -155,43 +155,43 @@
     out
 }
 
-#' @title Per-run sample annotation
+#' @title Per-run sample metadata
 #'
 #' @description
 #'
-#' `runData()` reads, and `runData<-()` writes, a dataset's per-run
-#' annotation: one row per run, keyed by `run_id`, holding whatever the
+#' `runData()` reads, and `runData<-()` writes, a dataset's per-run sample
+#' metadata: one row per run, keyed by `run_id`, holding whatever the
 #' experiment records about the sample that run came from.
 #'
 #' A run is one MS run -- one mzPeak archive, or one converted source file --
-#' and owns a contiguous block of the dataset's `spectrum_id_`, so the
-#' annotation's columns become ordinary spectra variables and
+#' and owns a contiguous block of the dataset's `spectrum_id_`, so the sample
+#' metadata's columns become ordinary spectra variables and
 #' [filterSampleData()] can select on them by id range rather than by reading
 #' a per-spectrum column.
 #'
-#' The annotation is written to `index/samples.parquet` and can be replaced at
-#' any time after ingest. Replacing it does not invalidate projections: it
-#' does not touch the signal.
+#' The sample metadata is written to `index/samples.parquet` and can be
+#' replaced at any time after ingest. Replacing it does not invalidate
+#' projections: it does not touch the signal.
 #'
-#' `runVariables()` lists the annotation columns.
+#' `runVariables()` lists the sample metadata columns.
 #'
 #' @details
 #'
 #' Column names are checked against the dataset's existing spectra variables
-#' and against the mzPeak column vocabulary. A run annotation column called
+#' and against the mzPeak column vocabulary. A sample metadata column called
 #' `time` or `id` would otherwise silently shadow the source of a core
 #' variable, so it is refused rather than accepted and later mis-read.
 #'
-#' Runs with no row in the table yield `NA`, so a partially annotated dataset
-#' is legal.
+#' Runs with no row in the table yield `NA`, so metadata covering only some
+#' of a dataset's runs is legal.
 #'
 #' @param x dataset path, or an [MsBackendParquet()] opened on one.
 #'
 #' @param value `data.frame` with a `run_id` column naming runs of the
-#'     dataset, plus one column per annotation variable.
+#'     dataset, plus one column per sample metadata variable.
 #'
-#' @return `runData()` a `data.frame` with one row per annotated run;
-#'     `runVariables()` a `character` of annotation column names.
+#' @return `runData()` a `data.frame` with one row per described run;
+#'     `runVariables()` a `character` of sample metadata column names.
 #'
 #' @seealso [filterSampleData()] to select spectra on it.
 #'
@@ -243,7 +243,7 @@ runVariables <- function(x) {
     value <- as.data.frame(value, stringsAsFactors = FALSE)
     if (!"run_id" %in% names(value))
         stop("'value' must have a 'run_id' column naming the runs it ",
-             "annotates.", call. = FALSE)
+             "describes.", call. = FALSE)
     value$run_id <- as.character(value$run_id)
     if (anyNA(value$run_id) || anyDuplicated(value$run_id))
         stop("'run_id' must be unique and non-missing.", call. = FALSE)
@@ -263,7 +263,7 @@ runVariables <- function(x) {
                                       names(Spectra::coreSpectraVariables()),
                                       .MZPEAK_CONSUMED, "mz", "intensity")))
     if (length(clash))
-        stop("Run annotation column(s) would shadow a spectra variable: ",
+        stop("Sample metadata column(s) would shadow a spectra variable: ",
              paste(clash, collapse = ", "), ".", call. = FALSE)
 
     dir.create(.index_path(path), recursive = TRUE, showWarnings = FALSE)
@@ -295,7 +295,7 @@ runVariables <- function(x) {
     invisible(x)
 }
 
-#' @title Select spectra by their run's sample annotation
+#' @title Select spectra by their run's sample metadata
 #'
 #' @description
 #'
@@ -303,7 +303,7 @@ runVariables <- function(x) {
 #' expression evaluated against the dataset's [runData()] table.
 #'
 #' Because every run owns a contiguous block of `spectrum_id_`, the condition
-#' is resolved against the (small) annotation table in R and turned into a
+#' is resolved against the (small) sample metadata table in R and turned into a
 #' range predicate over those blocks. No per-spectrum column is read, and the
 #' predicate is carried forward so a subsequent `peaksData()` prunes Parquet
 #' row groups on the dataset's sort key.
@@ -316,7 +316,7 @@ runVariables <- function(x) {
 #'
 #' @return `object` restricted to the matching spectra.
 #'
-#' @seealso [runData()] to set the annotation being filtered on.
+#' @seealso [runData()] to set the sample metadata being filtered on.
 #'
 #' @md
 #'
@@ -329,11 +329,11 @@ filterSampleData <- function(object, expr) {
         stop("'object' must be an 'MsBackendParquet'.", call. = FALSE)
     sd <- .samples(.path(object))
     if (!nrow(sd))
-        stop("Dataset '", .path(object), "' has no run annotation. Set it ",
+        stop("Dataset '", .path(object), "' has no sample metadata. Set it ",
              "with runData().", call. = FALSE)
     keep <- eval(substitute(expr), sd, parent.frame())
     if (!is.logical(keep) || length(keep) != nrow(sd))
-        stop("'expr' must give one logical value per run annotation row.",
+        stop("'expr' must give one logical value per sample metadata row.",
              call. = FALSE)
     # NA is not a match, matching `filterValues()` and R's own `%in%`.
     .filter_runs(object, sd$run_id[which(keep)])
