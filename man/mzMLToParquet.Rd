@@ -91,7 +91,7 @@ if (requireNamespace("mzR", quietly = TRUE)) {
     ## Convert and open in one call: the returned backend is already
     ## initialized on the new dataset.
     be <- mzMLToParquet(files, path = tempfile(),
-                        partitioning = "dataOrigin", verbose = FALSE)
+                        partitioning = "msLevel", verbose = FALSE)
     print(be)
 
     sps <- Spectra(be)

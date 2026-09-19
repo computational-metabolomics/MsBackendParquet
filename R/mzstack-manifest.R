@@ -32,6 +32,53 @@
 .MZSTACK_VERSION <- "0.1.0"
 .MZSTACK_KINDS <- c("mzpeak", "native")
 
+#' Reduce an identifier to characters that survive every file system.
+#'
+#' A `run_id` becomes a directory name (`run_id=<id>`), so it has to lose the
+#' Hive separators along with anything a file system might reject, and it must
+#' not begin with a dot: `.` and `..` are not names, and a leading dot hides the
+#' run from anything that lists a dataset.
+#'
+#' @noRd
+.sanitise_run_id <- function(id) {
+    id <- gsub("[^A-Za-z0-9._-]+", "_", as.character(id))
+    id <- sub("^[._]+", "", id)
+    id[is.na(id) | !nzchar(id)] <- "run"
+    id
+}
+
+#' The run id for a natively converted source file.
+#'
+#' @importFrom tools file_path_sans_ext
+#'
+#' @noRd
+.native_run_id <- function(file) {
+    .sanitise_run_id(tools::file_path_sans_ext(basename(file)))
+}
+
+#' Make run ids unique, comparing them case-insensitively.
+#'
+#' Two source files can share a basename in different directories, and
+#' `QC01.mzML` and `qc01.mzML` are different files on Linux but the same
+#' directory on macOS and Windows. Either way the two runs would land in one
+#' `run_id=` directory, interleaving their Parquet parts: the ids stay globally
+#' right, but each run's recorded `n_spectra` becomes a fiction relative to what
+#' its directory actually holds, and any later per-run operation corrupts the
+#' other run. So fold the case before deduplicating, and apply the suffix
+#' `make.unique()` chose back to the original spelling.
+#'
+#' `taken` lets a caller reserve ids that are already in a manifest.
+#'
+#' @noRd
+.unique_run_ids <- function(ids, taken = character()) {
+    if (!length(ids))
+        return(ids)
+    folded <- tolower(c(taken, ids))
+    i <- seq_along(ids) + length(taken)
+    paste0(ids, substring(make.unique(folded, sep = "-")[i],
+                          nchar(folded[i]) + 1L))
+}
+
 #' @noRd
 .manifest_path <- function(path) {
     file.path(path, .MZSTACK_MANIFEST)
@@ -204,28 +251,51 @@
 #' Flattening the nested `signal` object here keeps every caller from having
 #' to walk the list structure.
 #'
+#' One column at a time rather than one `data.frame` per run bound together:
+#' this is on the read path of `.manifest_split_ids()`, and a dataset holds one
+#' run per source file, so `rbind`ing N single-row frames would make every call
+#' quadratic in the number of runs.
+#'
 #' @noRd
 .manifest_runs <- function(m) {
     runs <- m$runs
     if (!length(runs))
         return(data.frame(run_id = character(), kind = character(),
                           path = character(), n_spectra = integer(),
-                          uid_base = integer(), layout = character(),
-                          profile = character(), centroid = character(),
+                          uid_base = integer(), ingested_at = integer(),
+                          layout = character(), profile = character(),
+                          centroid = character(),
                           stringsAsFactors = FALSE))
-    chr <- function(x) if (is.null(x) || !length(x)) NA_character_
-                       else as.character(x)[1L]
-    do.call(rbind, lapply(runs, function(r) data.frame(
-        run_id = chr(r$run_id),
-        kind = chr(r$kind),
-        path = chr(r$path),
-        n_spectra = as.integer(r$n_spectra %||% 0L),
-        uid_base = as.integer(r$uid_base %||% 1L),
-        ingested_at = as.integer(r$ingested_at %||% 1L),
-        layout = chr(r$signal$layout),
-        profile = chr(r$signal$profile),
-        centroid = chr(r$signal$centroid),
-        stringsAsFactors = FALSE)))
+    chr <- function(f) vapply(runs, function(r) {
+        x <- f(r)
+        if (is.null(x) || !length(x)) NA_character_ else as.character(x)[1L]
+    }, character(1))
+    int <- function(f, default) vapply(runs, function(r) {
+        x <- f(r)
+        if (is.null(x) || !length(x)) default else as.integer(x)[1L]
+    }, integer(1))
+    kind_v <- chr(function(r) r$kind)
+    path_v <- chr(function(r) r$path)
+    src_v <- chr(function(r) r$signal$source)
+    data.frame(
+        run_id = chr(function(r) r$run_id),
+        kind = kind_v,
+        path = path_v,
+        n_spectra = int(function(r) r$n_spectra, 0L),
+        uid_base = int(function(r) r$uid_base, 1L),
+        ingested_at = int(function(r) r$ingested_at, 1L),
+        layout = chr(function(r) r$signal$layout),
+        profile = chr(function(r) r$signal$profile),
+        centroid = chr(function(r) r$signal$centroid),
+        # What this run's spectra call their `dataOrigin`, or `NA` when the
+        # run does not have a single one. A native run records it explicitly,
+        # because `run_id` is a sanitised basename and cannot be turned back
+        # into it -- and records nothing when it spans several origins, which
+        # is what tells a caller to fall back to the per-spectrum column. An
+        # mzPeak run's is its archive directory, already recorded as `path`.
+        source = ifelse(!is.na(src_v), src_v,
+                        ifelse(kind_v == "mzpeak", path_v, NA_character_)),
+        stringsAsFactors = FALSE)
 }
 
 #' Total number of spectra across all runs.
@@ -265,7 +335,9 @@
 .manifest_add_run <- function(m, run_id, kind, path, n_spectra, layout,
                               profile = NA_character_,
                               centroid = NA_character_,
-                              partitioning = character()) {
+                              partitioning = character(),
+                              uid_base = .manifest_next_uid_base(m),
+                              source = NA_character_) {
     kind <- match.arg(kind, .MZSTACK_KINDS)
     if (run_id %in% vapply(m$runs, function(r) as.character(r$run_id),
                            character(1)))
@@ -274,12 +346,17 @@
     signal <- list(layout = layout, profile = profile, centroid = centroid)
     if (length(partitioning))
         signal$partitioning <- as.character(partitioning)
+    if (length(source) && !is.na(source))
+        signal$source <- as.character(source)[1L]
     m$runs[[length(m$runs) + 1L]] <- list(
         run_id = run_id,
         kind = kind,
         path = path,
         n_spectra = as.integer(n_spectra),
-        uid_base = .manifest_next_uid_base(m),
+        # Taken from the caller when it already knows where this run's block
+        # starts. The default re-derives it, which walks every run entry, so a
+        # writer adding runs in a loop should pass it.
+        uid_base = as.integer(uid_base),
         # The generation at which this run's index was built. Projections
         # record the value they were derived from, so re-ingesting one run
         # invalidates only that run's caches -- adding an unrelated run does
@@ -292,24 +369,46 @@
 
 #' Write the manifest for a dataset converted from raw MS data files.
 #'
-#' A native dataset is one run covering the whole `<dataset>/spectra`
-#' directory. Individual source files stay distinguishable through the
-#' `dataOrigin` column, so the writers do not have to track per-file
-#' boundaries.
+#' One run per source file, each covering its own `spectra/run_id=<id>`
+#' directory, in the order they were written -- so the blocks of
+#' `spectrum_id_` they claim tile `1..N` with no gap.
 #'
-#' Called at the end of every conversion path, replacing the sentinel file
-#' that earlier versions wrote and never read.
+#' Called once, at the end of every conversion path. Writing it per run
+#' instead would be worse than useless: while there is no manifest,
+#' `.is_parquet_dataset()` is `FALSE` and an interrupted conversion fails
+#' closed, whereas a partial manifest is a readable dataset whose `seq_len(N)`
+#' silently addresses only the files that got as far as being recorded.
 #'
-#' @param n_spectra total number of spectra written.
+#' @param runs `list` of `list(run_id, path, n_spectra)`, in write order.
 #'
 #' @noRd
-.manifest_write_native <- function(path, n_spectra,
-                                   partitioning = character()) {
-    m <- .manifest_add_run(
-        .manifest_new(), run_id = "native", kind = "native",
-        path = normalizePath(.spectra_path(path), mustWork = FALSE),
-        n_spectra = n_spectra,
-        layout = "list", partitioning = partitioning)
+.manifest_write_native <- function(path, runs, partitioning = character()) {
+    m <- .manifest_new()
+    base <- 1L
+    for (r in runs) {
+        n <- as.integer(r$n_spectra)
+        # A zero-spectrum run would share its `uid_base` with the next one,
+        # leaving `findInterval()` in `.manifest_split_ids()` to pick between
+        # them on tie-breaking alone.
+        if (!length(n) || is.na(n) || !n)
+            next
+        m <- .manifest_add_run(
+            m, run_id = r$run_id, kind = "native",
+            path = normalizePath(r$path, mustWork = FALSE),
+            n_spectra = n, layout = "list", partitioning = partitioning,
+            uid_base = base, source = r$source %||% NA_character_)
+        base <- base + n
+    }
+    # The writers count what they wrote; the dataset counts what is on disk.
+    # They can only disagree if a chunk was silently dropped, and then every
+    # `uid_base` past that point addresses the wrong rows -- which nothing
+    # downstream would notice, since ids stay a dense `seq_len(N)`.
+    n_disk <- .dataset_n_spectra(path)
+    if (!identical(.manifest_n_spectra(m), as.integer(n_disk)))
+        stop("Wrote ", n_disk, " spectra but accounted for ",
+             .manifest_n_spectra(m), " across ", length(m$runs),
+             " run(s); refusing to write an inconsistent manifest.",
+             call. = FALSE)
     .manifest_write(path, m)
     .manifest_cache_drop(unique(c(path, normalizePath(path,
                                                       mustWork = FALSE))))

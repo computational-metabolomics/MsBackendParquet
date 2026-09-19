@@ -197,9 +197,7 @@
     if (is.na(id)) {
         id <- sub("\\.mzpeak$", "", basename(dir))
     }
-    # `run_id` becomes a directory name in the index, so keep it to
-    # characters that survive every file system.
-    gsub("[^A-Za-z0-9._-]+", "_", id)
+    .sanitise_run_id(id)
 }
 
 #' Merge an archive's controlled-vocabulary column mappings into the dataset.

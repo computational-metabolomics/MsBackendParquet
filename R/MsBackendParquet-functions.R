@@ -40,6 +40,17 @@
     file.path(path, .SPECTRA_DIR)
 }
 
+#' The directory holding one native run's signal.
+#'
+#' Mirrors the layout an mzPeak-backed dataset gives its derived index, so a
+#' run means the same thing -- one source of spectra, one contiguous block of
+#' `spectrum_id_` -- whichever kind the dataset is.
+#'
+#' @noRd
+.run_dir <- function(path, run_id) {
+    file.path(.spectra_path(path), paste0("run_id=", run_id))
+}
+
 #' Is `path` a dataset this backend can open?
 #'
 #' Presence of the mzStack manifest is the whole test. Earlier versions also
@@ -487,10 +498,21 @@
     ds_cols <- intersect(columns, x@spectraVariables)
     ds_cols <- ds_cols[!ds_cols %in% c("mz", "intensity", colnames(res))]
     mz_cols <- intersect(columns, c("mz", "intensity"))
+    # Run annotation is expanded from the manifest rather than selected, and
+    # has to be split off *before* `.fetch_spectra_data()`: that one is
+    # all-or-nothing about the metadata cache, so a request mixing `rtime`
+    # with `timepoint` would miss it and fall through to a SELECT for a
+    # column the view does not have.
+    smp_cols <- intersect(ds_cols, x@.sample_vars)
+    ds_cols <- setdiff(ds_cols, smp_cols)
 
     if (length(ds_cols)) {
         res <- cbind(res, methods::as(
             .fetch_spectra_data(x, columns = ds_cols), "DataFrame"))
+    }
+    if (length(smp_cols)) {
+        res <- cbind(res, methods::as(
+            .sample_values(x, smp_cols), "DataFrame"))
     }
 
     # Each peak column is fetched and wrapped on its own: building matrices
@@ -515,9 +537,65 @@
 # Writing the dataset
 # ------------------------------------------------------------------------------
 
+#' Can `org` be cut into runs?
+#'
+#' A run is a *maximal contiguous block* of equal `dataOrigin`, never the set of
+#' rows sharing a value. The distinction is the whole game: grouping by value
+#' would reorder the spectra, and `uid_base` plus `n_spectra` can only describe
+#' a run whose rows are contiguous. So a value that reappears after a different
+#' one disqualifies the whole vector, and the caller writes one run instead.
+#'
+#' @noRd
+.origins_usable <- function(org) {
+    if (is.null(org) || !length(org))
+        return(FALSE)
+    org <- as.character(org)
+    if (anyNA(org) || !all(nzchar(org)))
+        return(FALSE)
+    !anyDuplicated(rle(org)$values)
+}
+
+#' Cut `org` into runs, as `list(start, end, run_id)` in input order.
+#'
+#' @return `NULL` when `org` cannot be blocked, which tells the caller to write
+#'     a single run.
+#'
+#' @noRd
+.origin_blocks <- function(org, taken = character()) {
+    if (!.origins_usable(org))
+        return(NULL)
+    r <- rle(as.character(org))
+    end <- as.integer(cumsum(r$lengths))
+    start <- end - as.integer(r$lengths) + 1L
+    ids <- .unique_run_ids(.native_run_id(r$values), taken = taken)
+    lapply(seq_along(ids), function(k)
+        list(start = start[k], end = end[k], run_id = ids[k],
+             origin = r$values[k]))
+}
+
+#' Maximal contiguous stretches of constant `f`, as index vectors into the
+#' original object.
+#'
+#' `split()` would return them in *level* order, which is exactly the reorder
+#' this must avoid; `rle()` keeps input order.
+#'
+#' @noRd
+.contiguous_chunks <- function(f, offset = 1L) {
+    r <- rle(as.character(f))
+    end <- as.integer(cumsum(r$lengths))
+    start <- end - as.integer(r$lengths) + 1L
+    off <- as.integer(offset) - 1L
+    lapply(seq_along(r$lengths), function(k)
+        seq.int(start[k] + off, end[k] + off))
+}
+
 #' Internal: write a `data.frame` (spectra metadata) plus a list of
 #' peaks matrices into the Parquet spectra dataset at `path`. The data
 #' frame must already contain a `spectrum_id_` column.
+#'
+#' `dest` is the directory the Parquet parts land in -- one run's
+#' `run_id=<id>` directory. `path` is still the dataset, because that is what
+#' the cache is keyed on.
 #'
 #' @noRd
 .write_spectra_chunk <- function(
@@ -527,7 +605,7 @@
     partitioning = character(),
     compression = .DEFAULT_COMPRESSION,
     row_group_size = .DEFAULT_ROW_GROUP_SIZE,
-    append = FALSE
+    dest = .spectra_path(path)
 ) {
     if (!nrow(data)) {
         return(invisible(FALSE))
@@ -548,7 +626,7 @@
     })
     data$mz <- mz
     data$intensity <- intensity
-    sp <- .spectra_path(path)
+    sp <- dest
     if (!dir.exists(sp)) {
         dir.create(sp, recursive = TRUE)
     }

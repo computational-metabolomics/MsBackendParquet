@@ -21,8 +21,9 @@ backend:
   in-memory backend while peak storage stays out of core;
 - pushes range and set predicates down to DuckDB, which prunes Parquet row
   groups using their min/max statistics;
-- supports Hive-style partitioning (e.g. by `dataOrigin`) for
-  efficient access patterns;
+- stores one run per source file, so selecting whole files prunes whole
+  directories, and supports Hive-style partitioning (e.g. by `msLevel`)
+  below that for finer access patterns;
 - stores only a file system path inside the backend object, so
   `MsBackendParquet` instances are fully serialisable and parallel-
   processing friendly;
@@ -74,13 +75,34 @@ library(Spectra)
 library(MsBackendParquet)
 
 files <- c("sample-1.mzML", "sample-2.mzML")
-be <- mzMLToParquet(files, path = tempfile(), partitioning = "dataOrigin")
+be <- mzMLToParquet(files, path = tempfile())
 sps <- Spectra(be)
 ```
 
 For more control (custom backends, chunk sizes, in-memory inputs) use
 [`createMsBackendParquetDataset()`](R/MsBackendParquet-creators.R)
 directly.
+
+### Sample metadata
+
+Each run — one mzPeak archive, or one converted source file — owns a
+contiguous block of the dataset's spectrum ids. `runData()` attaches the
+experiment's own annotation to those runs:
+
+```r
+runData(be) <- data.frame(run_id   = c("QC01", "QC02"),
+                          subject   = c("S3", "S3"),
+                          timepoint = c(0, 6))
+
+be$timepoint                          # an ordinary spectra variable
+filterSampleData(be, timepoint == 6)  # resolved as an id range
+```
+
+The annotation is stored once per run, not copied onto every spectrum, so a
+filter on it becomes a range predicate on the column the files are sorted by
+— the case Parquet's row-group statistics prune best — without reading a
+per-spectrum column. It can also be corrected at any time without rewriting
+the signal or invalidating projections.
 
 ### Memory-constrained conversion
 

@@ -20,10 +20,14 @@
 #' core variables) are dropped before writing to keep the on-disk
 #' dataset compact.
 #'
-#' If `partitioning` is supplied (e.g. `partitioning = "dataOrigin"`),
-#' Apache Arrow writes a Hive-partitioned dataset. Partitioning
-#' typically enables Arrow's partition pruning when filtering and can
-#' substantially speed up access to large datasets.
+#' Each source file becomes its own run, written to
+#' `<path>/spectra/run_id=<id>/`, so a filter that selects whole files
+#' already prunes at the directory level. If `partitioning` is supplied
+#' (e.g. `partitioning = "msLevel"`), Apache Arrow adds a further Hive level
+#' below the run, which typically enables Arrow's partition pruning when
+#' filtering and can substantially speed up access to large datasets.
+#' `"dataOrigin"` is not useful as a key, since it is constant within a run;
+#' it is dropped with a warning.
 #'
 #' @param path `character(1)` with the path to the dataset directory.
 #'     The directory must not already contain a `MsBackendParquet`
@@ -106,11 +110,12 @@
 #' sd$intensity <- IRanges::NumericList(c(10, 20), c(11, 21),
 #'                                      c(12, 22), compress = FALSE)
 #'
-#' ## `dataOrigin` becomes a Hive partitioning key, so a filter on it can
-#' ## skip whole files rather than scanning them.
+#' ## Each `dataOrigin` becomes its own run directory, so a filter on it
+#' ## skips whole files rather than scanning them. `msLevel` adds a second
+#' ## Hive level below the run.
 #' path <- tempfile()
 #' createMsBackendParquetDataset(path = path, data = sd,
-#'                               partitioning = "dataOrigin")
+#'                               partitioning = "msLevel")
 #'
 #' be <- backendInitialize(MsBackendParquet(), path = path)
 #' be
@@ -161,11 +166,11 @@ createMsBackendParquetDataset <- function(
                  "it streams from raw input files. Use engine = \"spectra\" ",
                  "to write an in-memory DataFrame.", call. = FALSE)
         }
-        .write_from_spectra_data(path, data, partitioning = partitioning,
-                                 compression = compression,
-                                 row_group_size = row_group_size)
-        .manifest_write_native(path, .dataset_n_spectra(path),
-                               partitioning = partitioning)
+        acc <- .write_from_spectra_data(path, data, partitioning = partitioning,
+                                        compression = compression,
+                                        row_group_size = row_group_size)
+        .manifest_write_native(path, acc$runs,
+                               partitioning = acc$partitioning)
         return(invisible(path))
     }
 
@@ -175,34 +180,36 @@ createMsBackendParquetDataset <- function(
     }
 
     if (engine == "mzr") {
-        .stream_mzml_to_parquet(
+        acc <- .stream_mzml_to_parquet(
             path = path, files = x,
             batch_size = as.integer(batch_size),
             partitioning = partitioning,
             compression = compression,
             row_group_size = row_group_size)
-        .manifest_write_native(path, .dataset_n_spectra(path),
-                               partitioning = partitioning)
+        .manifest_write_native(path, acc$runs,
+                               partitioning = acc$partitioning)
         return(invisible(path))
     }
 
     chunksize <- as.integer(chunksize)
     idxs <- seq_along(x)
     chunks <- split(idxs, ceiling(idxs / chunksize))
-    next_id <- 0L
+    # Every input file becomes its own run, so a `data_origin` partition would
+    # only re-state the directory it already sits in.
+    partitioning <- .effective_partitioning(partitioning, TRUE)
+    acc <- .native_acc(partitioning)
     message("Importing data ...")
     for (i in seq_along(chunks)) {
         sps <- Spectra::Spectra(source = backend, x[chunks[[i]]],
                                 BPPARAM = BPPARAM)
-        next_id <- .insert_from_spectra(
-            path, sps, index = next_id,
+        acc <- .insert_from_spectra(
+            path, sps, acc,
             partitioning = partitioning,
             compression = compression,
             row_group_size = row_group_size)
         rm(sps); gc(verbose = FALSE)
     }
-    .manifest_write_native(path, .dataset_n_spectra(path),
-                           partitioning = partitioning)
+    .manifest_write_native(path, acc$runs, partitioning = acc$partitioning)
     invisible(path)
 }
 
@@ -289,7 +296,7 @@ createMsBackendParquetDataset <- function(
 #'     ## Convert and open in one call: the returned backend is already
 #'     ## initialized on the new dataset.
 #'     be <- mzMLToParquet(files, path = tempfile(),
-#'                         partitioning = "dataOrigin", verbose = FALSE)
+#'                         partitioning = "msLevel", verbose = FALSE)
 #'     print(be)
 #'
 #'     sps <- Spectra(be)
@@ -367,7 +374,86 @@ mzMLToParquet <- function(
 # Writers
 # ------------------------------------------------------------------------------
 
+#' State threaded through a native conversion: the last `spectrum_id_` handed
+#' out, the runs recorded so far, and the partitioning actually used.
+#'
+#' One counter for the whole conversion is what makes the id blocks tile
+#' `1..N` without any writer having to negotiate with another. The
+#' partitioning rides along because only the writer knows whether it ended up
+#' dropping a redundant key, and the manifest has to record what was written
+#' rather than what was asked for.
+#'
+#' @noRd
+.native_acc <- function(partitioning = character()) {
+    list(next_id = 0L, runs = list(), partitioning = partitioning)
+}
+
+#' @noRd
+.native_acc_ids <- function(acc) {
+    vapply(acc$runs, function(r) r$run_id, character(1))
+}
+
+#' Record a run. The caller advances `next_id`, because a run may be written
+#' in several chunks.
+#'
+#' @noRd
+.native_acc_add <- function(acc, run_id, dir, n, source = NA_character_) {
+    if (!n)
+        return(acc)
+    acc$runs[[length(acc$runs) + 1L]] <-
+        list(run_id = run_id, path = dir, n_spectra = as.integer(n),
+             source = source)
+    acc
+}
+
+#' Drop a partitioning key that the per-run layout has already made redundant.
+#'
+#' Inside a run, `data_origin` has exactly one value, so partitioning on it
+#' buys a directory level and no pruning that `run_id=` does not already give
+#' -- while Arrow percent-escapes the absolute source path into a single path
+#' component that the extra nesting can push towards the file system's limit.
+#' Only worth keeping when the write fell back to one run spanning several
+#' origins, where the key still separates something.
+#'
+#' @noRd
+.effective_partitioning <- function(partitioning, blocked) {
+    if (!blocked || !"data_origin" %in% partitioning)
+        return(partitioning)
+    warning("'run_id' already partitions this dataset by source file; ",
+            "ignoring partitioning = \"dataOrigin\".", call. = FALSE)
+    setdiff(partitioning, "data_origin")
+}
+
+#' Write one contiguous stretch of a `Spectra` into `dest`.
+#'
+#' Ids continue from `next_id`; `spectrum_index` is made relative to
+#' `uid_base`, which is the first id of the *run* and so may predate this
+#' chunk. Metadata and peaks are both taken from the same `sps`, so they
+#' cannot be sliced apart.
+#'
+#' @return the number of spectra written.
+#'
+#' @noRd
+.write_spectra_block <- function(path, sps, dest, next_id, uid_base,
+                                 partitioning = character(),
+                                 compression = .DEFAULT_COMPRESSION,
+                                 row_group_size = .DEFAULT_ROW_GROUP_SIZE) {
+    sv <- setdiff(Spectra::spectraVariables(sps), c("mz", "intensity"))
+    spd <- as.data.frame(Spectra::spectraData(sps, columns = sv))
+    if (!nrow(spd))
+        return(0L)
+    spd$spectrum_id_ <- seq.int(next_id + 1L, next_id + nrow(spd))
+    spd <- .spectra_df_to_mzpeak(spd, uid_base = uid_base)
+    .write_spectra_chunk(
+        path, spd, Spectra::peaksData(sps, columns = c("mz", "intensity")),
+        partitioning = partitioning, compression = compression,
+        row_group_size = row_group_size, dest = dest)
+    nrow(spd)
+}
+
 #' Write the (full) data from a `DataFrame` to a new dataset at `path`.
+#'
+#' @return the accumulator, so the caller can write the manifest.
 #'
 #' @noRd
 .write_from_spectra_data <- function(
@@ -396,10 +482,10 @@ mzMLToParquet <- function(
     if (!"msLevel" %in% colnames(data)) data$msLevel <- NA_integer_
     if (!"rtime" %in% colnames(data)) data$rtime <- NA_real_
     if (!"precursorMz" %in% colnames(data)) data$precursorMz <- NA_real_
-    if (!"dataOrigin" %in% colnames(data))
+    had_origin <- "dataOrigin" %in% colnames(data)
+    if (!had_origin)
         data$dataOrigin <- "<mzStack>"
     data$spectrum_id_ <- seq_len(n)
-    data <- .spectra_df_to_mzpeak(data)
     peaks <- lapply(seq_len(n), function(i) {
         m <- if (is.null(mzs[[i]])) numeric() else as.numeric(mzs[[i]])
         ii <- if (is.null(ints[[i]])) numeric() else as.numeric(ints[[i]])
@@ -410,40 +496,75 @@ mzMLToParquet <- function(
             cbind(mz = m, intensity = ii)
         }
     })
-    .write_spectra_chunk(path, data, peaks,
-                         partitioning = partitioning,
-                         compression = compression,
-                         row_group_size = row_group_size)
+
+    # `spectrum_id_` is already `seq_len(n)` and defines the order the caller
+    # gets its spectra back in, so the runs are read off that order rather
+    # than imposed on it: an interleaved `dataOrigin` becomes one run, never a
+    # silent permutation of a public constructor's input.
+    blocks <- if (had_origin) .origin_blocks(data$dataOrigin) else NULL
+    blocked <- !is.null(blocks)
+    if (!blocked) {
+        if (had_origin)
+            message("'dataOrigin' does not cut the spectra into contiguous ",
+                    "blocks; writing a single run.")
+        blocks <- list(list(start = 1L, end = n, run_id = "native"))
+    }
+    partitioning <- .effective_partitioning(partitioning, blocked)
+
+    acc <- .native_acc(partitioning)
+    for (b in blocks) {
+        i <- seq.int(b$start, b$end)
+        dir <- .run_dir(path, b$run_id)
+        .write_spectra_chunk(
+            path, .spectra_df_to_mzpeak(data[i, , drop = FALSE],
+                                        uid_base = b$start),
+            peaks[i], partitioning = partitioning, compression = compression,
+            row_group_size = row_group_size, dest = dir)
+        acc$next_id <- b$end
+        acc <- .native_acc_add(acc, b$run_id, dir, length(i), b$origin)
+    }
+    acc
 }
 
-#' Insert one chunk of a `Spectra` object into the dataset, returning
-#' the last used `spectrum_id_`.
+#' Insert one chunk of a `Spectra` object, cutting it into one run per source
+#' file.
+#'
+#' `MsBackendMzR` lays its rows out grouped by file, in file order, so the cut
+#' is a no-op reordering-wise. A third-party `backend` may sort or omit
+#' `dataOrigin`, though, and the chunk is still written before the next one
+#' starts, so falling back to one run per chunk keeps the ids contiguous and
+#' costs only a coarser layout.
+#'
+#' @return the accumulator, updated.
 #'
 #' @noRd
-.insert_from_spectra <- function(path, sps, index = 0L,
+.insert_from_spectra <- function(path, sps, acc,
                                  partitioning = character(),
                                  compression = .DEFAULT_COMPRESSION,
                                  row_group_size = .DEFAULT_ROW_GROUP_SIZE) {
-    sv <- Spectra::spectraVariables(sps)
-    sv <- setdiff(sv, c("mz", "intensity"))
-    spd <- as.data.frame(Spectra::spectraData(sps, columns = sv))
-    if (nrow(spd)) {
-        spd$spectrum_id_ <- seq.int(index + 1L, index + nrow(spd))
-        # Store mzPeak's column vocabulary on disk (see the read view in
-        # `R/column-map.R`); `dataStorage` is supplied by that view.
-        spd <- .spectra_df_to_mzpeak(spd)
+    if (!length(sps))
+        return(acc)
+    taken <- .native_acc_ids(acc)
+    org <- tryCatch(as.character(dataOrigin(sps)), error = function(e) NULL)
+    blocks <- .origin_blocks(org, taken = taken)
+    if (is.null(blocks)) {
+        warning("Backend '", class(sps@backend)[1L], "' did not return ",
+                "spectra grouped by source file; writing this chunk as one ",
+                "run.", call. = FALSE)
+        blocks <- list(list(start = 1L, end = length(sps),
+                            run_id = .unique_run_ids("run", taken)))
     }
-    peaks <- Spectra::peaksData(sps, columns = c("mz", "intensity"))
-    .write_spectra_chunk(path, spd, peaks,
-                         partitioning = partitioning,
-                         compression = compression,
-                         row_group_size = row_group_size,
-                         append = TRUE)
-    if (nrow(spd)) {
-        spd$spectrum_id_[nrow(spd)]
-    } else {
-        index
+    for (b in blocks) {
+        dir <- .run_dir(path, b$run_id)
+        n <- .write_spectra_block(
+            path, sps[seq.int(b$start, b$end)], dest = dir,
+            next_id = acc$next_id, uid_base = acc$next_id + 1L,
+            partitioning = partitioning, compression = compression,
+            row_group_size = row_group_size)
+        acc$next_id <- acc$next_id + n
+        acc <- .native_acc_add(acc, b$run_id, dir, n, b$origin)
     }
+    acc
 }
 
 #' Similar to `.insert_from_spectra()` but driven by a chunk factor and
@@ -467,17 +588,36 @@ mzMLToParquet <- function(
              call. = FALSE)
     if (!dir.exists(path)) dir.create(path, recursive = TRUE)
     .invalidate_dataset_cache(path)
-    next_id <- 0L
-    for (l in levels(f)) {
-        sub <- Spectra::Spectra(object@backend[f == l])
-        next_id <- .insert_from_spectra(
-            path, sub, index = next_id,
-            partitioning = partitioning, compression = compression,
-            row_group_size = row_group_size)
-        rm(sub); gc(verbose = FALSE)
+
+    org <- tryCatch(as.character(dataOrigin(object)), error = function(e) NULL)
+    blocks <- .origin_blocks(org)
+    blocked <- !is.null(blocks)
+    if (!blocked)
+        blocks <- list(list(start = 1L, end = length(object),
+                            run_id = "native"))
+    partitioning <- .effective_partitioning(partitioning, blocked)
+
+    acc <- .native_acc(partitioning)
+    for (b in blocks) {
+        dir <- .run_dir(path, b$run_id)
+        base <- acc$next_id + 1L
+        # `f` bounds how much is held in memory at once; it must never decide
+        # the order. Iterating its levels would write interleaved files out of
+        # input order, and `setBackend()` would return a permutation of
+        # `object` -- silently, because the ids stay a dense `seq_len(N)`.
+        for (k in .contiguous_chunks(f[seq.int(b$start, b$end)],
+                                     offset = b$start)) {
+            sub <- Spectra::Spectra(object@backend[k])
+            acc$next_id <- acc$next_id + .write_spectra_block(
+                path, sub, dest = dir, next_id = acc$next_id,
+                uid_base = base, partitioning = partitioning,
+                compression = compression, row_group_size = row_group_size)
+            rm(sub); gc(verbose = FALSE)
+        }
+        acc <- .native_acc_add(acc, b$run_id, dir, acc$next_id - base + 1L,
+                               b$origin)
     }
-    .manifest_write_native(path, .dataset_n_spectra(path),
-                           partitioning = partitioning)
+    .manifest_write_native(path, acc$runs, partitioning = acc$partitioning)
     invisible(path)
 }
 
@@ -646,22 +786,32 @@ mzMLToParquet <- function(
     }
     batch_size <- max(1L, as.integer(batch_size))
     row_group_size <- max(1L, as.integer(row_group_size))
-    next_id <- as.integer(starting_id)
-    for (f in files) {
-        next_id <- .stream_one_file(
-            path = path, file = f, batch_size = batch_size,
+    # One file in, one run out: the only path where the run boundary needs no
+    # inference at all.
+    partitioning <- .effective_partitioning(partitioning, TRUE)
+    ids <- .unique_run_ids(.native_run_id(files))
+    acc <- .native_acc(partitioning)
+    for (k in seq_along(files)) {
+        dir <- .run_dir(path, ids[k])
+        n <- .stream_one_file(
+            path = path, file = files[k], dest = dir, batch_size = batch_size,
             partitioning = partitioning, compression = compression,
             row_group_size = row_group_size,
-            starting_id = next_id)
+            starting_id = acc$next_id)
+        acc$next_id <- acc$next_id + n
+        # `.stream_one_file()` sets `dataOrigin` to the normalised path, so
+        # that is what the run records as its source.
+        acc <- .native_acc_add(acc, ids[k], dir, n,
+                               normalizePath(files[k], mustWork = FALSE))
     }
     .invalidate_dataset_cache(path)
-    invisible(next_id)
+    acc
 }
 
 #' Stream one mzML file into the dataset.
 #'
 #' @noRd
-.stream_one_file <- function(path, file, batch_size,
+.stream_one_file <- function(path, file, dest, batch_size,
                              partitioning, compression,
                              row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                              starting_id) {
@@ -671,12 +821,15 @@ mzMLToParquet <- function(
     hdr <- mzR::header(ms)
     n <- nrow(hdr)
     if (!n) {
-        return(invisible(starting_id))
+        return(0L)
+    }
+    if (!dir.exists(dest)) {
+        dir.create(dest, recursive = TRUE)
     }
     sd <- .mzr_header_to_spectra_df(hdr)
     sd$dataOrigin <- file_abs
     sd$spectrum_id_ <- seq.int(starting_id + 1L, starting_id + n)
-    sd <- .spectra_df_to_mzpeak(sd)
+    sd <- .spectra_df_to_mzpeak(sd, uid_base = starting_id + 1L)
 
     file_token <- paste0(format(Sys.time(), "%H%M%S"), "-",
                          paste(sample(c(letters, 0:9), 6, TRUE),
@@ -702,7 +855,7 @@ mzMLToParquet <- function(
         })
         if (length(partitioning)) {
             .write_batch_dataset(
-                batch_df, path = path, partitioning = partitioning,
+                batch_df, dest = dest, partitioning = partitioning,
                 compression = compression,
                 row_group_size = row_group_size,
                 basename = paste0("part-", file_token, "-",
@@ -713,7 +866,7 @@ mzMLToParquet <- function(
             if (is.null(writer)) {
                 schema <- tbl$schema
                 sink <- arrow::FileOutputStream$create(
-                    file.path(.spectra_path(path),
+                    file.path(dest,
                               paste0("part-", file_token, ".parquet")))
                 writer <- arrow::ParquetFileWriter$create(
                     schema = schema, sink = sink,
@@ -733,7 +886,7 @@ mzMLToParquet <- function(
         sink$close()
         sink <- NULL
     }
-    starting_id + n
+    n
 }
 
 #' Read peaks for a vector of spectrum indices from an open mzR file.
@@ -753,13 +906,13 @@ mzMLToParquet <- function(
 #' previously written batches are not overwritten.
 #'
 #' @noRd
-.write_batch_dataset <- function(batch_df, path, partitioning,
+.write_batch_dataset <- function(batch_df, dest, partitioning,
                                  compression,
                                  row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                                  basename) {
     tbl <- arrow::as_arrow_table(batch_df)
     arrow::write_dataset(
-        tbl, path = .spectra_path(path), format = "parquet",
+        tbl, path = dest, format = "parquet",
         partitioning = partitioning,
         compression = compression,
         max_rows_per_group = max(1L, as.integer(row_group_size)),

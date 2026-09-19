@@ -48,11 +48,11 @@
           "acquisition_num_", "INTEGER"),
         r("acquisitionNum", 'CAST("spectrum_index" AS INTEGER)',
           "spectrum_index", "INTEGER"),
-        # `spectrum_index` is the dataset's own unique 0-based key, so it is
-        # only the right answer for `scanIndex` when the run is a single
-        # source file; which an mzPeak archive always is. A natively
-        # converted dataset can span several files, so it keeps each
-        # spectrum's position within its file in `scan_index`.
+        # `spectrum_index` is the run's own 0-based key, and a run is one
+        # source file, so it already counts from 0 within that file. A
+        # dataset that still records the acquisition-order position it had in
+        # its source keeps it in `scan_index` and that wins, since it survives
+        # a conversion that dropped or reordered spectra.
         r("scanIndex", 'CAST("scan_index" AS INTEGER)',
           "scan_index", "INTEGER"),
         r("scanIndex", 'CAST("spectrum_index" AS INTEGER)',
@@ -186,10 +186,13 @@
 #' @param df `data.frame` of spectra metadata with `Spectra` column names,
 #'     already carrying `spectrum_id_`.
 #'
+#' @param uid_base the first `spectrum_id_` of the run being written, which is
+#'     what makes `spectrum_index` run-local.
+#'
 #' @return `data.frame` with mzPeak column names.
 #'
 #' @noRd
-.spectra_df_to_mzpeak <- function(df) {
+.spectra_df_to_mzpeak <- function(df, uid_base = 1L) {
     df <- as.data.frame(df, stringsAsFactors = FALSE)
 
     # Isolation window: Spectra carries absolute lower/upper m/z, mzPeak the
@@ -208,8 +211,13 @@
     df[["isolationWindowLowerMz"]] <- NULL
     df[["isolationWindowUpperMz"]] <- NULL
 
-    # The read view injects `dataStorage` as the dataset path.
+    # The read view injects `dataStorage` as the dataset path, and derives
+    # `run_id` from the directory a part sits in. Both would otherwise survive
+    # a round trip through `spectraData()` and be written back as real
+    # columns -- and a `run_id` column beside a `run_id=` directory is a
+    # collision the reader cannot resolve.
     df[["dataStorage"]] <- NULL
+    df[["run_id"]] <- NULL
 
     for (e in .SPECTRA_TO_MZPEAK) {
         v <- df[[e$spectra]]
@@ -220,10 +228,13 @@
     }
 
     # mzPeak's `spectrum_index` MUST be the run's unique, monotonic 0-based
-    # key. A native mzStack dataset is one run, so that is exactly
-    # `spectrum_id_ - 1` -- never a per-file `scanIndex`, which may repeat.
+    # key -- never a per-file `scanIndex`, which may repeat. `spectrum_id_` is
+    # unique across the whole dataset and allocated in one contiguous block per
+    # run, so subtracting the block's first id makes it run-local, which is
+    # what an mzPeak archive's own index means.
     if (!is.null(df[["spectrum_id_"]]))
-        df[["spectrum_index"]] <- as.integer(df[["spectrum_id_"]]) - 1L
+        df[["spectrum_index"]] <- as.integer(df[["spectrum_id_"]]) -
+            as.integer(uid_base)
 
     df
 }

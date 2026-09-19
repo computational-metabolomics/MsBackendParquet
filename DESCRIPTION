@@ -40,6 +40,7 @@ Imports:
     ProtGenerics (>= 1.36.0),
     S4Vectors,
     stats,
+    tools,
     utils
 Suggests:
     BiocStyle,
@@ -68,6 +69,7 @@ Collate:
     'mzpeak-archive.R'
     'mzstack-manifest.R'
     'projections.R'
+    'sample-data.R'
     'zzz.R'
 Config/testthat/edition: 3
 Config/roxygen2/version: 8.0.0

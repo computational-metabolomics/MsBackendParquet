@@ -13,7 +13,13 @@
 # Columns worth holding by default: the ones every optimised filter method
 # needs. Everything else is loaded only if `spectraData()` asks for it and the
 # budget allows.
-.META_DEFAULT_COLUMNS <- c("msLevel", "rtime", "precursorMz", "dataOrigin")
+#
+# `dataOrigin` is deliberately absent. It is constant within a run, so
+# `filterDataOrigin()` resolves it from the manifest's id blocks instead; a
+# copy per spectrum would be a few bytes each to answer a question about a
+# few thousand runs. It is still cached on demand if something asks for the
+# values themselves.
+.META_DEFAULT_COLUMNS <- c("msLevel", "rtime", "precursorMz")
 
 # Budget in cells (rows x columns). 5e7 cells is ~400 MB for doubles, and
 # covers 12.5M spectra for the four default columns.

@@ -146,9 +146,15 @@
 #' @noRd
 .translating_dataset_view <- function(glob, path) {
     con <- .duckdb_con()
+    # `hive_types_autocast = 0` keeps `run_id` a string. DuckDB otherwise
+    # infers a type per partition key, so a dataset whose files are named
+    # `1.mzML`, `2.mzML` would hand back a BIGINT where `QC01.mzML` hands back
+    # a VARCHAR, and every comparison against a manifest run id would depend
+    # on what the runs happen to be called.
     src <- paste0(
         "read_parquet(", DBI::dbQuoteString(con, glob),
-        ", hive_partitioning = TRUE, union_by_name = TRUE)")
+        ", hive_partitioning = TRUE, hive_types_autocast = 0",
+        ", union_by_name = TRUE)")
     available <- names(DBI::dbGetQuery(
         con, paste0("SELECT * FROM ", src, " LIMIT 0")))
     view <- .view_name()
@@ -182,6 +188,7 @@
     }
     .meta_cache_drop(unique(c(path, key)))
     .manifest_cache_drop(unique(c(path, key)))
+    .samples_cache_drop(unique(c(path, key)))
     invisible()
 }
 

@@ -36,9 +36,11 @@ together with the `mz`/`intensity` peak values in a columnar format that
 supports compression, dictionary encoding and Hive-style partitioning.
 
 A dataset is a directory identified by an `mzStack.json`
-manifest, holding one or more *runs*. A run is either `native` (converted
-from raw MS data files, with peaks stored alongside the metadata) or
-`mzpeak`, an index over external
+manifest, holding one or more *runs*. A run is one source of spectra --
+one MS run -- and owns a contiguous block of the dataset's spectrum ids,
+so selecting a run is a range query rather than a scan. A run is either
+`native` (converted from a raw MS data file, with peaks stored alongside
+the metadata) or `mzpeak`, an index over external
 [HUPO-PSI mzPeak](https://github.com/HUPO-PSI/mzPeak) archives that are
 read where they are and never modified (see
 *Querying collections of mzPeak archives* below). The manifest records
@@ -66,7 +68,7 @@ library(Spectra)
 library(MsBackendParquet)
 
 files <- c("sample-1.mzML", "sample-2.mzML")
-be <- mzMLToParquet(files, path = tempfile(), partitioning = "dataOrigin")
+be <- mzMLToParquet(files, path = tempfile())
 sps <- Spectra(be)
 ```
 
@@ -77,10 +79,17 @@ codec, Parquet row-group size, or writing an existing `DataFrame`), call
 ```{r create-ms-backend, eval = FALSE}
 path <- tempfile()
 createMsBackendParquetDataset(path = path, x = files,
-                              partitioning = "dataOrigin",
+                              partitioning = "msLevel",
                               compression = "snappy")
 be <- backendInitialize(MsBackendParquet(), path = path)
 ```
+
+Each input file becomes its own run, written to
+`<path>/spectra/run_id=<id>/`, so a filter that selects whole files prunes
+at the directory level without any `partitioning` at all. `partitioning`
+adds a further Hive level *below* the run, which is why the example uses
+`msLevel` rather than `dataOrigin`: the latter is constant within a run and
+would only restate the directory it sits in.
 
 Both functions import MS data via `MsBackendMzR()` by default and write
 spectra metadata together with the `mz`/`intensity` values as Parquet
@@ -139,6 +148,52 @@ filterPrecursorMzValues(be, 110.5, ppm = 20)
 Chained filters combine into a single scan, and a subsequent
 `peaksData()` call reuses the same predicate to prune the peak data it
 reads.
+
+# Sample metadata
+
+An experiment records things about the *sample* a run came from -- subject,
+timepoint, treatment group, injection order -- that are not in the raw data.
+`runData()` stores them in the dataset, one row per run, keyed by `run_id`:
+
+```{r run-data}
+runData(be) <- data.frame(run_id = c("file-a", "file-b"),
+                          subject = c("S1", "S2"),
+                          timepoint = c(0L, 6L))
+runVariables(be)
+```
+
+The columns then behave like any other spectra variable:
+
+```{r run-data-access}
+spectraData(be, c("rtime", "subject", "timepoint"))
+```
+
+and `filterSampleData()` selects on them:
+
+```{r filter-sample-data}
+filterSampleData(be, timepoint == 6)
+```
+
+The annotation is held once per run, not copied onto every spectrum. That is
+not primarily about disk -- a constant column compresses to almost nothing --
+but about what a run already is. Each run owns a *contiguous block* of
+`spectrum_id_`, so `timepoint == 6` is exactly a range of ids, and
+`filterSampleData()` resolves it against a table of a few thousand rows
+rather than reading a column of a few million. The resulting predicate is a
+range on the column the files are ordered by, which is the case Parquet's
+row-group statistics prune best, and it is carried into any later
+`peaksData()`.
+
+Keeping it out of the per-spectrum data also makes it correctable. Sample
+annotation is the one thing that reliably changes after ingest -- a
+mislabelled vial, a clinical variable that arrives months later. Rewriting it
+touches a few kilobytes and leaves the signal, and any projections built over
+it, untouched.
+
+Runs with no row get `NA`, so a partially annotated dataset is fine. To go
+further -- linking samples to spectra in an experiment-wide object -- pass the
+table to `r Biocpkg("MsExperiment")`'s `linkSampleData()`, which keys on
+`dataOrigin` or `run_id`.
 
 # Querying with MassQL
 

@@ -34,8 +34,12 @@ test_that("a converted dataset is an mzStack dataset of kind native", {
     m <- .manifest_read(path)
     expect_identical(m$format, "mzStack")
     expect_identical(.semver_major(m$version), .semver_major(.MZSTACK_VERSION))
-    expect_length(m$runs, 1L)
-    expect_identical(.manifest_runs(m)$layout, "list")
+    ## One run per source file, blocks tiling 1..N in write order.
+    expect_length(m$runs, 2L)
+    expect_identical(.manifest_runs(m)$run_id, c("file-a", "file-b"))
+    expect_identical(.manifest_runs(m)$n_spectra, c(2L, 1L))
+    expect_identical(.manifest_runs(m)$uid_base, c(1L, 3L))
+    expect_identical(.manifest_runs(m)$layout, rep("list", 2L))
     expect_identical(.manifest_n_spectra(m), 3L)
 })
 
@@ -116,10 +120,11 @@ test_that("a manifest of a foreign format or major version is rejected", {
 test_that("Hive partitioning survives a manifest round trip", {
     root <- tempfile()
     dir.create(root)
-    be <- .native_dataset(root, partitioning = "dataOrigin")
+    be <- .native_dataset(root, partitioning = "msLevel")
     m <- .manifest_read(.path(be))
-    ## Recorded under the on-disk (mzPeak) column name.
-    expect_identical(.manifest_partitioning(m, "native"), "data_origin")
+    ## Recorded under the on-disk (mzPeak) column name, against every run.
+    expect_identical(.manifest_partitioning(m, "file-a"), "ms_level")
+    expect_identical(.manifest_partitioning(m, "file-b"), "ms_level")
     ## and the dataset still reads back correctly
     expect_identical(length(be), 3L)
     expect_identical(length(filterDataOrigin(be, "file-a")), 2L)
@@ -130,7 +135,7 @@ test_that("no partitioning recorded means no partitioning key", {
     dir.create(root)
     be <- .native_dataset(root)
     expect_identical(.manifest_partitioning(.manifest_read(.path(be)),
-                                            "native"), character())
+                                            "file-a"), character())
 })
 
 test_that("projections are refused on a natively converted dataset", {

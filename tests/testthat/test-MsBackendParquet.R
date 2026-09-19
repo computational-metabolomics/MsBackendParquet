@@ -85,11 +85,12 @@ test_that("locally cached variables shadow the on-disk dataset", {
     expect_equal(spectraData(be, "flag")[[1L]], c("a", "b", "c"))
 })
 
-test_that("dataset can be partitioned by dataOrigin", {
-    be <- .make_test_backend(partitioning = "dataOrigin")
+test_that("dataset can be partitioned below the run", {
+    be <- .make_test_backend(partitioning = "msLevel")
     expect_equal(length(be), 3L)
     f <- filterDataOrigin(be, "file-a")
     expect_equal(length(f), 2L)
+    expect_equal(length(filterMsLevel(be, 1L)), 2L)
 })
 
 test_that("backendInitialize refuses to overwrite an existing dataset", {

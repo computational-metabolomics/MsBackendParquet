@@ -33,14 +33,18 @@
     names(arrow::open_dataset(.spectra_path(path)))
 }
 
-## Scalar (non-peak) columns of a single-file native dataset, id-ordered.
+## Scalar (non-peak) columns of a native dataset, id-ordered. One Parquet part
+## per run, so read them all and let `spectrum_id_` put them back in order.
 .read_raw_spectra <- function(path) {
     fl <- list.files(.spectra_path(path), pattern = "\\.parquet$",
                      recursive = TRUE, full.names = TRUE)
-    stopifnot(length(fl) == 1L)
-    raw <- as.data.frame(arrow::read_parquet(fl))
-    raw$mz <- NULL
-    raw$intensity <- NULL
+    stopifnot(length(fl) >= 1L)
+    raw <- do.call(rbind, lapply(fl, function(f) {
+        x <- as.data.frame(arrow::read_parquet(f))
+        x$mz <- NULL
+        x$intensity <- NULL
+        x
+    }))
     raw[order(raw$spectrum_id_), , drop = FALSE]
 }
 
@@ -70,7 +74,7 @@ test_that("native files store mzPeak value encodings on disk", {
     expect_equal(raw$scan_polarity, c(1L, 1L, -1L))         # +/- 1
     expect_equal(raw$spectrum_representation,
                  c("MS:1000128", "MS:1000127", "MS:1000127"))
-    expect_equal(raw$spectrum_index, 0:2)                   # 0-based
+    expect_equal(raw$spectrum_index, c(0L, 1L, 0L))         # 0-based, per run
     expect_equal(raw$number_of_data_points, c(2L, 2L, 2L))
     ## target + offsets, not absolute bounds
     expect_equal(raw$isolation_window_lower_offset, c(NA, 0.5, 0.5))
@@ -125,14 +129,15 @@ test_that("filters still push down through the translating native view", {
     expect_equal(length(filterPrecursorMzRange(be, c(500, 600))), 1L)
 })
 
-test_that("spectrum_index is the dataset key; per-file scanIndex is kept", {
-    ## A dataset converted from two source files: Spectra's `scanIndex`
-    ## restarts at 0 per file, but mzPeak's `spectrum_index` must be the
-    ## run's unique 0-based key.
+test_that("spectrum_index is the run key; the source scanIndex is kept", {
+    ## A dataset converted from two source files. `spectrum_index` is the
+    ## run's own 0-based key, so it restarts per file; `scanIndex` is the
+    ## position the spectrum had in its source and is kept verbatim, which is
+    ## why the fixture starts it at 1 rather than 0.
     sd <- S4Vectors::DataFrame(
         msLevel = rep(1L, 6),
         rtime = c(10, 20, 30, 10, 20, 30),
-        scanIndex = c(0L, 1L, 2L, 0L, 1L, 2L),
+        scanIndex = c(1L, 2L, 3L, 1L, 2L, 3L),
         acquisitionNum = c(11L, 12L, 13L, 11L, 12L, 13L),
         dataOrigin = rep(c("A.mzML", "B.mzML"), each = 3))
     sd$mz <- IRanges::NumericList(as.list(1:6), compress = FALSE)
@@ -141,21 +146,44 @@ test_that("spectrum_index is the dataset key; per-file scanIndex is kept", {
     be <- backendInitialize(MsBackendParquet(), path = path, data = sd)
 
     raw <- .read_raw_spectra(path)
-    expect_equal(raw$spectrum_index, 0:5)                   # unique, monotonic
-    expect_equal(raw$scan_index, c(0L, 1L, 2L, 0L, 1L, 2L)) # per source file
+    expect_equal(raw$spectrum_index, c(0L, 1L, 2L, 0L, 1L, 2L)) # per run
+    expect_equal(raw$scan_index, c(1L, 2L, 3L, 1L, 2L, 3L))     # as supplied
 
     got <- spectraData(be, c("scanIndex", "acquisitionNum", "dataOrigin"))
-    expect_equal(as.integer(got$scanIndex), c(0L, 1L, 2L, 0L, 1L, 2L))
+    expect_equal(as.integer(got$scanIndex), c(1L, 2L, 3L, 1L, 2L, 3L))
     expect_equal(as.integer(got$acquisitionNum), c(11L, 12L, 13L, 11L, 12L, 13L))
+})
+
+test_that("one run per source file is the top partition level", {
+    d0 <- .rich_native_backend()
+    path <- tempfile()
+    be <- backendInitialize(MsBackendParquet(), path = path, data = d0$sd)
+    expect_setequal(basename(list.dirs(.spectra_path(path),
+                                       recursive = FALSE)),
+                    c("run_id=a", "run_id=b"))
+    expect_equal(length(filterDataOrigin(be, "a.mzML")), 2L)
 })
 
 test_that("a native dataset partitioned on a Spectra key writes mzPeak dirs", {
     d0 <- .rich_native_backend()
     path <- tempfile()
     be <- backendInitialize(MsBackendParquet(), path = path, data = d0$sd,
-                            partitioning = "dataOrigin")
-    ## Hive directory uses the mzPeak column name.
-    expect_true(any(grepl("data_origin=",
+                            partitioning = "msLevel")
+    ## Hive directory uses the mzPeak column name, nested below the run.
+    expect_true(any(grepl("run_id=a/ms_level=",
                           list.dirs(.spectra_path(path), recursive = TRUE))))
     expect_equal(length(filterDataOrigin(be, "a.mzML")), 2L)
+})
+
+test_that("partitioning on dataOrigin is dropped as the run already is it", {
+    d0 <- .rich_native_backend()
+    path <- tempfile()
+    expect_warning(
+        backendInitialize(MsBackendParquet(), path = path, data = d0$sd,
+                          partitioning = "dataOrigin"),
+        "already partitions")
+    expect_false(any(grepl("data_origin=",
+                           list.dirs(.spectra_path(path), recursive = TRUE))))
+    expect_identical(
+        .manifest_partitioning(.manifest_read(path), "a"), character())
 })

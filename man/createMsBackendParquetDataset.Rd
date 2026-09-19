@@ -90,10 +90,14 @@ Spectra metadata that are entirely \code{NA} (and not part of the Spectra
 core variables) are dropped before writing to keep the on-disk
 dataset compact.
 
-If \code{partitioning} is supplied (e.g. \code{partitioning = "dataOrigin"}),
-Apache Arrow writes a Hive-partitioned dataset. Partitioning
-typically enables Arrow's partition pruning when filtering and can
-substantially speed up access to large datasets.
+Each source file becomes its own run, written to
+\verb{<path>/spectra/run_id=<id>/}, so a filter that selects whole files
+already prunes at the directory level. If \code{partitioning} is supplied
+(e.g. \code{partitioning = "msLevel"}), Apache Arrow adds a further Hive level
+below the run, which typically enables Arrow's partition pruning when
+filtering and can substantially speed up access to large datasets.
+\code{"dataOrigin"} is not useful as a key, since it is constant within a run;
+it is dropped with a warning.
 }
 \examples{
 library(Spectra)
@@ -110,11 +114,12 @@ sd$mz <- IRanges::NumericList(c(100, 110), c(101, 111),
 sd$intensity <- IRanges::NumericList(c(10, 20), c(11, 21),
                                      c(12, 22), compress = FALSE)
 
-## `dataOrigin` becomes a Hive partitioning key, so a filter on it can
-## skip whole files rather than scanning them.
+## Each `dataOrigin` becomes its own run directory, so a filter on it
+## skips whole files rather than scanning them. `msLevel` adds a second
+## Hive level below the run.
 path <- tempfile()
 createMsBackendParquetDataset(path = path, data = sd,
-                              partitioning = "dataOrigin")
+                              partitioning = "msLevel")
 
 be <- backendInitialize(MsBackendParquet(), path = path)
 be
