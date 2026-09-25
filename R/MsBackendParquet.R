@@ -153,7 +153,11 @@
 #' - `intensity()` / `mz()`: return [IRanges::NumericList()] objects.
 #' - `intensity<-` / `mz<-`: not supported.
 #' - `peaksData()`: returns a `list` of two-column matrices.
-#' - `peaksVariables()`: returns `c("mz", "intensity")`.
+#' - `peaksVariables()`: returns `c("mz", "intensity")`, followed by any
+#'   peak-annotation variable a native dataset stores beside them: a list
+#'   column with one value per peak, such as a merged spectrum's per-peak
+#'   signal-to-noise. Such variables are written by passing them as list
+#'   columns in `data` to `createMsBackendParquetDataset()`.
 #' - `reset()`: re-initialises the backend from disk and drops cached
 #'   spectra variables.
 #' - `spectraData()`: returns a `DataFrame` with the requested spectra
@@ -365,9 +369,10 @@ setMethod(
             createMsBackendParquetDataset(path = path, data = data, ...)
         }
         if (!.is_parquet_dataset(path)) {
-            stop("'", path, "' is not an mzStack dataset: no ",
-                 .MZSTACK_MANIFEST, ". Datasets written before mzStack ",
-                 "naming must be re-created.", call. = FALSE)
+            mzstackError("format",
+                         "'", path, "' is not an mzStack dataset: no ",
+                         .MZSTACK_MANIFEST, ". Datasets written before ",
+                         "mzStack naming must be re-created.")
         }
         object@path <- path
         object@representation <- representation

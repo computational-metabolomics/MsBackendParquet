@@ -87,7 +87,8 @@
         stop("'x' must be a dataset path or an 'MsBackendParquet'.",
              call. = FALSE)
     if (!.is_parquet_dataset(x))
-        stop("'", x, "' is not an mzStack dataset.", call. = FALSE)
+        mzstackError("format",
+                     "'", x, "' is not an mzStack dataset.")
     x
 }
 
@@ -263,8 +264,9 @@ runVariables <- function(x) {
                                       names(Spectra::coreSpectraVariables()),
                                       .MZPEAK_CONSUMED, "mz", "intensity")))
     if (length(clash))
-        stop("Sample metadata column(s) would shadow a spectra variable: ",
-             paste(clash, collapse = ", "), ".", call. = FALSE)
+        mzstackError("semantic",
+                     "Sample metadata column(s) would shadow a spectra ",
+                     "variable: ", paste(clash, collapse = ", "), ".")
 
     dir.create(.index_path(path), recursive = TRUE, showWarnings = FALSE)
     fl <- .samples_path(path)
@@ -329,8 +331,9 @@ filterSampleData <- function(object, expr) {
         stop("'object' must be an 'MsBackendParquet'.", call. = FALSE)
     sd <- .samples(.path(object))
     if (!nrow(sd))
-        stop("Dataset '", .path(object), "' has no sample metadata. Set it ",
-             "with runData().", call. = FALSE)
+        mzstackError("capability",
+                     "Dataset '", .path(object), "' has no sample metadata. ",
+                     "Set it with runData().")
     keep <- eval(substitute(expr), sd, parent.frame())
     if (!is.logical(keep) || length(keep) != nrow(sd))
         stop("'expr' must give one logical value per sample metadata row.",

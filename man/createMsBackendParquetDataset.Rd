@@ -91,13 +91,10 @@ core variables) are dropped before writing to keep the on-disk
 dataset compact.
 
 Each source file becomes its own run, written to
-\verb{<path>/spectra/run_id=<id>/}, so a filter that selects whole files
-already prunes at the directory level. If \code{partitioning} is supplied
+\verb{<path>/spectra/run_id=<id>/}. If \code{partitioning} is supplied
 (e.g. \code{partitioning = "msLevel"}), Apache Arrow adds a further Hive level
 below the run, which typically enables Arrow's partition pruning when
 filtering and can substantially speed up access to large datasets.
-\code{"dataOrigin"} is not useful as a key, since it is constant within a run;
-it is dropped with a warning.
 }
 \examples{
 library(Spectra)

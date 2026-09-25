@@ -33,6 +33,8 @@ test_that("a dataset with no sample metadata is not a special case", {
     expect_identical(nrow(runData(be)), 0L)
     expect_identical(runVariables(be), character())
     expect_error(filterSampleData(be, timepoint == 6), "no sample metadata")
+    expect_error(filterSampleData(be, timepoint == 6),
+                 class = "mzstack_capability")
 })
 
 test_that("sample metadata columns become ordinary spectra variables", {
@@ -89,6 +91,7 @@ test_that("a sample metadata column that would shadow a spectra variable is refu
         df <- data.frame(run_id = "file-a", x = 1)
         names(df)[2] <- nm
         expect_error(runData(be) <- df, "would shadow")
+        expect_error(runData(be) <- df, class = "mzstack_semantic")
     }
 })
 
