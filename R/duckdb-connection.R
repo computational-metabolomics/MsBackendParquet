@@ -136,8 +136,8 @@
     } else {
         sp <- .spectra_path(path)
         if (!dir.exists(sp)) {
-            stop("Parquet dataset directory '", sp, "' does not exist.",
-                 call. = FALSE)
+            mzstackError("format",
+                         "Parquet dataset directory '", sp, "' does not exist.")
         }
         glob <- file.path(sp, "**", "*.parquet")
     }

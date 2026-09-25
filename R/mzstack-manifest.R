@@ -32,6 +32,13 @@
 .MZSTACK_VERSION <- "0.1.0"
 .MZSTACK_KINDS <- c("mzpeak", "native")
 
+# The top-level keys this package interprets. Everything else in a manifest
+# (the results layer's `uid`, `role`, `sources`, `provenance` and `results`,
+# or keys a later version adds) is carried through a read/write cycle
+# untouched, which mzStack-0 requires of every reader that rewrites a
+# manifest.
+.MZSTACK_OWNED_KEYS <- c("format", "version", "generation", "created", "runs")
+
 #' Reduce an identifier to characters that survive every file system.
 #'
 #' A `run_id` becomes a directory name (`run_id=<id>`), so it has to lose the
@@ -128,15 +135,38 @@
 # `.invalidate_dataset_cache()`.
 .manifest_cache <- new.env(parent = emptyenv())
 
-#' The manifest for a dataset, parsed at most once per process.
+#' Modification time and size of a dataset's manifest, `NULL` if it has none.
+#'
+#' The manifest is only ever replaced by an atomic rename, so a change of
+#' either value means another writer, in this process or another, has
+#' committed a new version.
+#'
+#' @noRd
+.manifest_stamp <- function(path) {
+    info <- file.info(.manifest_path(path), extra_cols = FALSE)
+    if (is.na(info$size))
+        return(NULL)
+    c(as.numeric(info$mtime), info$size)
+}
+
+#' The manifest for a dataset, parsed once per version of the file.
+#'
+#' Checking the file's stamp costs one `stat()`, and is what lets a manifest
+#' rewritten by another package or another process reach this one. When the
+#' manifest has changed, every other cache held for the dataset is dropped
+#' too, since the views, metadata and sample tables all derive from it.
 #'
 #' @noRd
 .dataset_manifest <- function(path) {
-    m <- .manifest_cache[[path]]
-    if (!is.null(m))
-        return(m)
+    hit <- .manifest_cache[[path]]
+    stamp <- .manifest_stamp(path)
+    if (!is.null(hit)) {
+        if (identical(hit$stamp, stamp))
+            return(hit$manifest)
+        .invalidate_dataset_cache(path)
+    }
     m <- .manifest_read(path)
-    assign(path, m, envir = .manifest_cache)
+    assign(path, list(manifest = m, stamp = stamp), envir = .manifest_cache)
     m
 }
 
@@ -168,9 +198,10 @@
     if (!length(kinds))
         return("native")
     if (length(kinds) > 1L)
-        stop("Dataset '", path, "' mixes run kinds (",
-             paste(kinds, collapse = ", "),
-             "), which is not supported.", call. = FALSE)
+        mzstackError("format",
+                     "Dataset '", path, "' mixes run kinds (",
+                     paste(kinds, collapse = ", "),
+                     "), which is not supported.")
     kinds
 }
 
@@ -198,25 +229,45 @@
 .manifest_read <- function(path) {
     fl <- .manifest_path(path)
     if (!file.exists(fl))
-        stop("'", path, "' is not an mzStack dataset: no ",
-             .MZSTACK_MANIFEST, ". Datasets written before mzStack ",
-             "naming must be re-created.", call. = FALSE)
-    m <- tryCatch(jsonlite::fromJSON(fl, simplifyVector = TRUE,
-                                     simplifyDataFrame = FALSE),
-                  error = function(e)
-                      stop("Could not parse '", fl, "': ",
-                           conditionMessage(e), call. = FALSE))
+        mzstackError("format",
+                     "'", path, "' is not an mzStack dataset: no ",
+                     .MZSTACK_MANIFEST, ". Datasets written before mzStack ",
+                     "naming must be re-created.")
+    txt <- tryCatch(paste(readLines(fl, warn = FALSE, encoding = "UTF-8"),
+                          collapse = "\n"),
+                    error = function(e)
+                        mzstackError("format",
+                                     "Could not read '", fl, "': ",
+                                     conditionMessage(e)))
+    parse <- function(simplify)
+        tryCatch(jsonlite::fromJSON(txt, simplifyVector = simplify,
+                                    simplifyDataFrame = FALSE),
+                 error = function(e)
+                     mzstackError("format",
+                                  "Could not parse '", fl, "': ",
+                                  conditionMessage(e)))
+    m <- parse(TRUE)
+    # Keys this package does not interpret are kept exactly as parsed, arrays
+    # as lists. Simplified, a one-element array would come back as a scalar
+    # and be written out as one, silently changing another layer's data.
+    other <- setdiff(names(m), .MZSTACK_OWNED_KEYS)
+    if (length(other)) {
+        raw <- parse(FALSE)
+        m[other] <- raw[other]
+    }
     if (!identical(as.character(m$format)[1L], .MZSTACK_FORMAT))
-        stop("'", fl, "' declares format '", m$format %||% "<missing>",
-             "'; expected '", .MZSTACK_FORMAT, "'.", call. = FALSE)
+        mzstackError("format",
+                     "'", fl, "' declares format '", m$format %||% "<missing>",
+                     "'; expected '", .MZSTACK_FORMAT, "'.")
     # Same major version means the layout is one this code understands; a
     # later minor version may add fields, which is harmless.
     have <- .semver_major(m$version)
     want <- .semver_major(.MZSTACK_VERSION)
     if (is.na(have) || !identical(have, want))
-        stop("Dataset '", path, "' is mzStack version ",
-             m$version %||% "<missing>", "; this version of ",
-             "MsBackendParquet reads ", want, ".x.", call. = FALSE)
+        mzstackError("format",
+                     "Dataset '", path, "' is mzStack version ",
+                     m$version %||% "<missing>", "; this version of ",
+                     "MsBackendParquet reads ", want, ".x.")
     m$generation <- as.integer(m$generation)
     if (is.null(m$runs))
         m$runs <- list()
@@ -235,13 +286,70 @@
         dir.create(path, recursive = TRUE)
     fl <- .manifest_path(path)
     tmp <- paste0(fl, ".tmp-", Sys.getpid())
-    writeLines(jsonlite::toJSON(m, auto_unbox = TRUE, pretty = TRUE,
-                                null = "null", na = "null"), tmp)
+    # `auto_unbox` would write a one-element array as a scalar; `I()` exempts
+    # the fields the format defines as arrays.
+    for (i in seq_along(m$runs))
+        if (!is.null(m$runs[[i]]$signal$partitioning))
+            m$runs[[i]]$signal$partitioning <-
+                I(as.character(unlist(m$runs[[i]]$signal$partitioning)))
+    writeLines(jsonlite::toJSON(.json_exact_doubles(m), auto_unbox = TRUE,
+                                pretty = TRUE, null = "null", na = "null",
+                                json_verbatim = TRUE),
+               tmp)
     if (!file.rename(tmp, fl)) {
         unlink(tmp)
         stop("Could not write '", fl, "'.", call. = FALSE)
     }
     invisible(fl)
+}
+
+#' The shortest decimal rendering of each double that reads back exactly.
+#'
+#' jsonlite writes 15 significant digits by default, which does not
+#' round-trip a binary64 value; mzStack requires numbers in the manifest to
+#' round-trip exactly (a tolerance recorded as `0.01` when the code used
+#' `0.010000000000000002` misstates the parameter). 17 digits always
+#' suffice, and trying 15 and 16 first keeps `0.1` from being written as
+#' `0.10000000000000001`. Non-finite values have no JSON form and become
+#' `null`.
+#'
+#' @noRd
+.shortest_double <- function(x) {
+    out <- rep("null", length(x))
+    ok <- is.finite(x)
+    todo <- ok
+    for (d in 15:17) {
+        if (!any(todo))
+            break
+        s <- sprintf(paste0("%.", d, "g"), x[todo])
+        back <- as.numeric(s) == x[todo]
+        if (d == 17L)
+            back[] <- TRUE
+        idx <- which(todo)[back]
+        out[idx] <- s[back]
+        todo[idx] <- FALSE
+    }
+    out
+}
+
+#' Replace every double in a manifest by its exact JSON text.
+#'
+#' Doubles become pre-rendered `json` values, which jsonlite inserts
+#' verbatim. A length-one vector is written as a scalar, as `auto_unbox`
+#' would, unless it is wrapped in `I()`.
+#'
+#' @noRd
+.json_exact_doubles <- function(x) {
+    if (is.list(x)) {
+        x[] <- lapply(x, .json_exact_doubles)
+        return(x)
+    }
+    if (!is.double(x) || inherits(x, "json"))
+        return(x)
+    s <- .shortest_double(as.vector(x))
+    if (length(s) != 1L || inherits(x, "AsIs"))
+        s <- paste0("[", paste(s, collapse = ","), "]")
+    structure(s, class = "json")
 }
 
 #' Increment the generation counter.
@@ -494,4 +602,138 @@
     if (is.null(run_ids))
         return(have)
     all(run_ids %in% have)
+}
+
+#' Read and write an mzStack manifest
+#'
+#' @description
+#'
+#' Every mzStack dataset is described by a manifest, `mzStack.json`, at the
+#' root of its directory. These functions give packages layered on
+#' MsBackendParquet, such as a results layer that adds its own top-level keys,
+#' access to it without re-implementing the format's rules:
+#'
+#' - `newManifest()` returns the manifest of an empty dataset: no runs, at
+#'   generation 1.
+#'
+#' - `readManifest()` parses and validates the manifest. Keys this package
+#'   does not interpret are returned exactly as parsed, arrays as `list`s, so
+#'   they survive a read/write cycle unchanged.
+#'
+#' - `writeManifest()` replaces the manifest atomically: the new version is
+#'   written to a temporary file and renamed into place, so a reader never
+#'   observes a half-written manifest. It increments `generation`, refuses to
+#'   overwrite a manifest another writer has committed since `manifest` was
+#'   read, and drops every cache this package holds for the dataset.
+#'   Numbers are written so that they read back exactly. Where `path` holds
+#'   no manifest yet, the directory is created if needed and `manifest` is
+#'   written as the dataset's first, without incrementing `generation`.
+#'
+#' - `manifestRuns()` returns the run entries as a `data.frame`, one row per
+#'   run: `run_id`, `kind`, `path`, `n_spectra`, `uid_base`, `ingested_at`,
+#'   `layout`, `profile`, `centroid` and `source`. The tuple
+#'   `(run_id, uid_base, n_spectra, ingested_at)` is the run's fingerprint:
+#'   while it is unchanged, the run's `spectrum_id_` values address the same
+#'   spectra.
+#'
+#' - `invalidateDatasetCache()` drops the parsed manifest, the DuckDB view,
+#'   the metadata cache and the sample metadata this process holds for a
+#'   dataset. `writeManifest()` calls it; call it directly after changing a
+#'   dataset's files by other means. A manifest replaced by another process is
+#'   detected without it.
+#'
+#' The manifest must be written last, after every file it declares is
+#' durably on disk: its atomic replacement is the commit point of any write.
+#'
+#' @param path `character(1)`, the dataset directory, or an
+#'     `MsBackendParquet` over it.
+#'
+#' @param manifest `list`, as returned by `readManifest()` and modified.
+#'
+#' @param bump `logical(1)`, whether to increment `generation`. Every change
+#'     to a dataset's content must, so leave this `TRUE` unless the change is
+#'     one the specification exempts.
+#'
+#' @return `newManifest()` and `readManifest()` return a `list`. `writeManifest()` returns the
+#'     written manifest invisibly, with its new `generation`.
+#'     `manifestRuns()` returns a `data.frame`. `invalidateDatasetCache()`
+#'     returns `NULL` invisibly.
+#'
+#' @author Ossama Edbali
+#'
+#' @name mzstack-manifest
+#'
+#' @examples
+#' fl <- system.file("extdata", "QC01.mzpeak", package = "MsBackendParquet")
+#' ds <- createMzPeakDataset(fl, file.path(tempdir(), "manifest-example"))
+#' m <- readManifest(ds)
+#' m$generation
+#' manifestRuns(ds)[, c("run_id", "uid_base", "n_spectra", "ingested_at")]
+#'
+#' ## Add a key of another layer. It survives this package's own writes.
+#' m$role <- "study"
+#' m <- writeManifest(ds, m)
+#' m$generation
+NULL
+
+#' @rdname mzstack-manifest
+#'
+#' @export
+newManifest <- function() {
+    .manifest_new()
+}
+
+#' @rdname mzstack-manifest
+#'
+#' @export
+readManifest <- function(path) {
+    .manifest_read(.as_dataset_path(path))
+}
+
+#' @rdname mzstack-manifest
+#'
+#' @export
+writeManifest <- function(path, manifest, bump = TRUE) {
+    if (!is.list(manifest) ||
+        !identical(as.character(manifest$format)[1L], .MZSTACK_FORMAT))
+        stop("'manifest' must be an mzStack manifest as returned by ",
+             "readManifest() or newManifest().", call. = FALSE)
+    if (is.character(path) && length(path) == 1L && !is.na(path) &&
+        !.is_mzstack_dataset(path)) {
+        # The first manifest is what makes the directory a dataset, so there
+        # is no earlier version to conflict with or to count on from.
+        .manifest_write(path, manifest)
+        path <- normalizePath(path)
+        .invalidate_dataset_cache(path)
+        return(invisible(manifest))
+    }
+    path <- .as_dataset_path(path)
+    on_disk <- .manifest_read(path)$generation
+    if (!identical(as.integer(manifest$generation), on_disk))
+        stop("The manifest of '", path, "' is at generation ", on_disk,
+             " but 'manifest' was read at generation ", manifest$generation,
+             ": another writer has committed since. Re-read it and re-apply ",
+             "the change.", call. = FALSE)
+    if (isTRUE(bump))
+        manifest <- .manifest_bump_generation(manifest)
+    .manifest_write(path, manifest)
+    .invalidate_dataset_cache(path)
+    invisible(manifest)
+}
+
+#' @rdname mzstack-manifest
+#'
+#' @export
+manifestRuns <- function(path) {
+    .manifest_runs(.dataset_manifest(.as_dataset_path(path)))
+}
+
+#' @rdname mzstack-manifest
+#'
+#' @export
+invalidateDatasetCache <- function(path) {
+    if (!is.character(path))
+        stop("'path' must be a character vector.", call. = FALSE)
+    .invalidate_dataset_cache(path)
+    invisible(NULL)
 }

@@ -99,9 +99,10 @@ buildProjection <- function(path, type = "mzsorted", runs = NULL,
     type <- match.arg(type, "mzsorted")
     path <- normalizePath(path, mustWork = TRUE)
     if (.dataset_kind(path) != "mzpeak")
-        stop("Projections are built from mzPeak archives; '", path,
-             "' holds natively converted data. See createMzPeakDataset().",
-             call. = FALSE)
+        mzstackError("unsupported",
+                     "Projections are built from mzPeak archives; '", path,
+                     "' holds natively converted data. See ",
+                     "createMzPeakDataset().")
     m <- .manifest_read(path)
     con <- .duckdb_con()
     rs <- .manifest_runs(m)
@@ -270,8 +271,9 @@ filterContainsMz <- function(object, mz = numeric(), tolerance = 0,
     if (!length(mz))
         return(object)
     if (.dataset_kind(.path(object)) != "mzpeak")
-        stop("'filterContainsMz()' needs a dataset built from mzPeak ",
-             "archives; see createMzPeakDataset().", call. = FALSE)
+        mzstackError("unsupported",
+                     "'filterContainsMz()' needs a dataset built from mzPeak ",
+                     "archives; see createMzPeakDataset().")
     lmz <- length(mz)
     if (length(ppm) != lmz) ppm <- rep(ppm[1L], lmz)
     if (length(tolerance) != lmz) tolerance <- rep(tolerance[1L], lmz)
