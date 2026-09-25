@@ -454,6 +454,14 @@ mzMLToParquet <- function(
     ints <- as.list(data$intensity)
     data$mz <- NULL
     data$intensity <- NULL
+    extra <- .peak_annotations(data, mzs)
+    for (nm in names(extra))
+        data[[nm]] <- NULL
+    run_ids <- NULL
+    if ("run_id" %in% colnames(data)) {
+        run_ids <- .check_run_id_column(data$run_id)
+        data$run_id <- NULL
+    }
     if ("spectrum_id_" %in% colnames(data)) {
         warning("Overwriting existing 'spectrum_id_' column.", call. = FALSE)
         data$spectrum_id_ <- NULL
@@ -482,8 +490,10 @@ mzMLToParquet <- function(
 
     # `spectrum_id_` is already `seq_len(n)` and defines the order the caller
     # gets its spectra back in, so the runs are read off that order rather
-    # than imposed on it: an interleaved `dataOrigin` becomes one run.
-    blocks <- if (had_origin) .origin_blocks(data$dataOrigin) else NULL
+    # than imposed on it: an interleaved `dataOrigin` becomes one run. An
+    # explicit `run_id` column names the runs instead of `dataOrigin`.
+    blocks <- if (!is.null(run_ids)) .run_id_blocks(run_ids, data$dataOrigin)
+              else if (had_origin) .origin_blocks(data$dataOrigin) else NULL
     blocked <- !is.null(blocks)
     if (!blocked) {
         if (had_origin)
@@ -497,15 +507,80 @@ mzMLToParquet <- function(
     for (b in blocks) {
         i <- seq.int(b$start, b$end)
         dir <- .run_dir(path, b$run_id)
+        df <- .spectra_df_to_mzpeak(data[i, , drop = FALSE],
+                                    uid_base = b$start)
+        for (nm in names(extra))
+            df[[nm]] <- I(extra[[nm]][i])
         .write_spectra_chunk(
-            path, .spectra_df_to_mzpeak(data[i, , drop = FALSE],
-                                        uid_base = b$start),
-            peaks[i], partitioning = partitioning, compression = compression,
-            row_group_size = row_group_size, dest = dir)
+            path, df, peaks[i], partitioning = partitioning,
+            compression = compression, row_group_size = row_group_size,
+            dest = dir)
         acc$next_id <- b$end
-        acc <- .native_acc_add(acc, b$run_id, dir, length(i), b$origin)
+        acc <- .native_acc_add(acc, b$run_id, dir, length(i),
+                               if (had_origin) b$origin else NA_character_)
     }
     acc
+}
+
+#' Peak-annotation variables of `data`: list columns other than `mz` and
+#' `intensity`, one element per peak.
+#'
+#' The mzStack specification lets a native run carry such variables beside
+#' `mz` and `intensity` (a merged spectrum's per-peak signal-to-noise, or
+#' how many source spectra observed each peak). A `NULL` element means the
+#' variable is absent for that spectrum; otherwise its length must equal the
+#' number of peaks, so peaks stay aligned. `NA` elements are allowed.
+#'
+#' @return named `list` of plain lists, one per variable.
+#'
+#' @noRd
+.peak_annotations <- function(data, mzs) {
+    is_list <- vapply(colnames(data), function(nm) {
+        v <- data[[nm]]
+        is(v, "List") || (is.list(v) && !is.data.frame(v))
+    }, logical(1))
+    out <- lapply(colnames(data)[is_list], function(nm) {
+        v <- as.list(data[[nm]])
+        len <- lengths(v)
+        bad <- !vapply(v, is.null, logical(1)) & len != lengths(mzs)
+        if (any(bad))
+            stop("Peak variable '", nm, "' must have as many values as 'mz' ",
+                 "in every spectrum; it does not in spectrum ",
+                 which(bad)[1L], ".", call. = FALSE)
+        unname(v)
+    })
+    names(out) <- colnames(data)[is_list]
+    out
+}
+
+#' Check an explicit `run_id` column: every value a valid run id, and each
+#' run one contiguous stretch.
+#'
+#' @noRd
+.check_run_id_column <- function(x) {
+    x <- as.character(x)
+    if (anyNA(x) || !all(grepl("^[A-Za-z0-9._-]{1,128}$", x)) ||
+        any(grepl("^[._]", x)))
+        stop("'run_id' values must match [A-Za-z0-9._-]{1,128} and not ",
+             "begin with '.' or '_'.", call. = FALSE)
+    r <- rle(x)$values
+    if (anyDuplicated(tolower(r)))
+        stop("Each run in 'run_id' must be one contiguous block of spectra, ",
+             "and run ids must differ other than by case.", call. = FALSE)
+    x
+}
+
+#' Cut the spectra into runs by an explicit `run_id` column.
+#'
+#' @noRd
+.run_id_blocks <- function(run_ids, origin = NULL) {
+    r <- rle(run_ids)
+    end <- as.integer(cumsum(r$lengths))
+    start <- end - as.integer(r$lengths) + 1L
+    lapply(seq_along(r$values), function(k)
+        list(start = start[k], end = end[k], run_id = r$values[k],
+             origin = if (is.null(origin)) NA_character_
+                      else as.character(origin[start[k]])))
 }
 
 #' Insert one chunk of a `Spectra` object, cutting it into one run per source
@@ -637,11 +712,12 @@ mzMLToParquet <- function(
     ext <- ext[nzchar(ext)]
     bad <- ext[!ext %in% .MS_INPUT_EXTENSIONS]
     if (length(bad)) {
-        stop("Unsupported file extension(s): ",
-             paste0("'.", unique(bad), "'", collapse = ", "),
-             ". Expected one of: ",
-             paste0(".", .MS_INPUT_EXTENSIONS, collapse = ", "),
-             ".", call. = FALSE)
+        mzstackError("unsupported",
+                     "Unsupported file extension(s): ",
+                     paste0("'.", unique(bad), "'", collapse = ", "),
+                     ". Expected one of: ",
+                     paste0(".", .MS_INPUT_EXTENSIONS, collapse = ", "),
+                     ".")
     }
     invisible(TRUE)
 }

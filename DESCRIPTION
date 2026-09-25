@@ -1,6 +1,6 @@
 Package: MsBackendParquet
 Title: Apache Parquet-based Mass Spectrometry Data Backend
-Version: 0.99.4
+Version: 0.99.5
 Authors@R: c(
     person(
         "Ossama",
@@ -63,6 +63,7 @@ Collate:
     'MsBackendParquet.R'
     'MsBackendParquet-creators.R'
     'column-map.R'
+    'conditions.R'
     'duckdb-connection.R'
     'ingest.R'
     'metadata-cache.R'

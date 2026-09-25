@@ -1,3 +1,23 @@
+# MsBackendParquet 0.99.5
+
+## New features
+
+- Typed error conditions. Failures the mzStack specification classifies are raised as conditions of class `mzstack_format`, `mzstack_archive`, `mzstack_stale`, `mzstack_unsupported`, `mzstack_semantic`, `mzstack_capability` or `mzstack_resource`, each inheriting `mzstack_error` and `error`, so a caller can handle one kind of failure without matching message text. A missing or foreign manifest, an unsupported major version and mixed run kinds are `mzstack_format`; an unreadable mzPeak archive is `mzstack_archive`; filtering on sample metadata a dataset does not carry, or asking a run for a representation it does not hold, is `mzstack_capability`; a sample variable that would shadow a spectra variable is `mzstack_semantic`. `mzstackError()` and `mzstackCondition()` are exported so that packages layered on this one raise the same classes. Messages are unchanged.
+
+- An exported manifest API for packages layered on MsBackendParquet: `newManifest()`, `readManifest()`, `writeManifest()`, `manifestRuns()` and `invalidateDatasetCache()`. `writeManifest()` replaces the manifest atomically, increments `generation`, refuses to overwrite a manifest another writer committed after it was read, and drops the caches held for the dataset. Given a directory with no manifest, it commits the first one, which is how a dataset with no runs of its own (a results dataset holding only tables) is created.
+
+- Peak-annotation variables. A native dataset can carry list columns beside `mz` and `intensity`, one value per peak, such as a merged spectrum's per-peak signal-to-noise or contributor counts (mzStack-4 §6). Pass them as list columns in `data` to `createMsBackendParquetDataset()`; every non-`NULL` element must be as long as that spectrum's `mz`. They are reported by `peaksVariables()` and returned by `peaksData(columns = )` and `spectraData()`. A spectrum that does not carry a variable returns `NA` for it, aligned with its peaks. Requests for `mz` and `intensity` alone take the existing fast path.
+
+- An explicit `run_id` column in `data` names the runs `createMsBackendParquetDataset()` writes, in place of names derived from `dataOrigin`. Each run must be one contiguous block of spectra, and every id must be a valid run id. `dataOrigin`, when given, is still recorded as the run's source. This lets a derived spectrum keep its source run's `dataOrigin` while its run is named after the aggregation that produced it.
+
+## Bug fixes
+
+- Manifest keys this package does not interpret, such as the results layer's `sources`, `provenance` and `results`, are now carried through a read/write cycle exactly as parsed. Previously a one-element array in them came back as a scalar, so `runData<-()` on a results dataset rewrote `"sorted_by": ["x"]` as `"sorted_by": "x"`. A one-element `signal.partitioning` is likewise written as an array.
+
+- Numbers in the manifest are written with the shortest decimal form that reads back exactly, rather than jsonlite's 15 significant digits.
+
+- The parsed-manifest cache notices a manifest replaced by another process or package, by its modification time and size, and drops every cache held for the dataset when it does.
+
 # MsBackendParquet 0.99.4
 
 ## New features

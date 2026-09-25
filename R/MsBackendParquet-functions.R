@@ -303,8 +303,9 @@
     pv <- .peaks_variables(x)
     miss <- setdiff(columns, pv)
     if (length(miss)) {
-        stop("Unsupported peaks variable(s): ",
-             paste0("'", miss, "'", collapse = ", "), call. = FALSE)
+        mzstackError("unsupported",
+                     "Unsupported peaks variable(s): ",
+                     paste0("'", miss, "'", collapse = ", "))
     }
     if (!length(.ids(x))) {
         return(list())
@@ -326,9 +327,40 @@
             res[[nm]] <- res[[nm]][idx]
         }
     }
+    if (!all(columns %in% c("mz", "intensity")))
+        return(.pack_peak_columns(res, columns, drop = drop))
     mz_list <- if ("mz" %in% want) res$mz else NULL
     int_list <- if ("intensity" %in% want) res$intensity else NULL
     .pack_peaks(mz_list, int_list, columns = columns, drop = drop)
+}
+
+#' Pack arbitrary peak variables into one matrix per spectrum.
+#'
+#' The general, slower path, taken only when a peak-annotation variable is
+#' requested; `mz` and `intensity` alone go through `C_pack_peaks`. A
+#' spectrum whose list is `NULL` does not carry that variable, and gets a
+#' column of `NA` as long as its other columns (the equal-length rule makes
+#' every non-`NULL` list the same length).
+#'
+#' @noRd
+.pack_peak_columns <- function(res, columns, drop = FALSE) {
+    n <- nrow(res)
+    lists <- lapply(columns, function(nm) {
+        v <- res[[nm]]
+        if (is.null(v)) vector("list", n) else v
+    })
+    names(lists) <- columns
+    lapply(seq_len(n), function(i) {
+        vals <- lapply(lists, `[[`, i)
+        len <- max(0L, lengths(vals))
+        vals <- lapply(vals, function(v)
+            if (is.null(v)) rep(NA_real_, len) else as.numeric(v))
+        if (drop && length(columns) == 1L)
+            return(vals[[1L]])
+        m <- matrix(unlist(vals, use.names = FALSE), ncol = length(columns),
+                    dimnames = list(NULL, columns))
+        m
+    })
 }
 
 #' Which signal file of a run to read.
@@ -346,13 +378,15 @@
     pick <- switch(
         representation,
         profile = if (is.na(prof))
-            stop("Run '", run$run_id, "' holds no profile data. Open the ",
-                 "dataset with representation = \"centroid\" or \"auto\".",
-                 call. = FALSE) else prof,
+            mzstackError("capability",
+                         "Run '", run$run_id, "' holds no profile data. ",
+                         "Open the dataset with representation = ",
+                         "\"centroid\" or \"auto\".") else prof,
         centroid = if (is.na(cent))
-            stop("Run '", run$run_id, "' holds no centroid data. Open the ",
-                 "dataset with representation = \"profile\" or \"auto\".",
-                 call. = FALSE) else cent,
+            mzstackError("capability",
+                         "Run '", run$run_id, "' holds no centroid data. ",
+                         "Open the dataset with representation = ",
+                         "\"profile\" or \"auto\".") else cent,
         if (!is.na(cent)) cent else prof)
     file.path(run$path, pick)
 }
@@ -454,8 +488,9 @@
         out <- switch(columns,
                       mz = mz,
                       intensity = intensity,
-                      stop("Unsupported single column '", columns, "'.",
-                           call. = FALSE))
+                      mzstackError("unsupported",
+                                   "Unsupported single column '", columns,
+                                   "'."))
         # DuckDB returns doubles already; only a NULL (empty spectrum) needs
         # replacing, so skip the blanket as.numeric() pass over every vector.
         empty <- vapply(out, is.null, logical(1))
@@ -480,8 +515,9 @@
                      if (identical(columns, "intensity")) single else NULL)
         return(lapply(res, function(m) m[, columns, drop = FALSE]))
     }
-    stop("Unsupported peaks column selection: ",
-         paste0("'", columns, "'", collapse = ", "), call. = FALSE)
+    mzstackError("unsupported",
+                 "Unsupported peaks column selection: ",
+                 paste0("'", columns, "'", collapse = ", "))
 }
 
 
@@ -503,9 +539,10 @@
     if (is.null(res)) {
         res <- make_zero_col_DFrame(length(x))
     }
+    pk <- .peaks_variables(x)
     ds_cols <- intersect(columns, x@spectraVariables)
-    ds_cols <- ds_cols[!ds_cols %in% c("mz", "intensity", colnames(res))]
-    mz_cols <- intersect(columns, c("mz", "intensity"))
+    ds_cols <- ds_cols[!ds_cols %in% c(pk, colnames(res))]
+    mz_cols <- intersect(columns, pk)
     smp_cols <- intersect(ds_cols, x@.sample_vars)
     ds_cols <- setdiff(ds_cols, smp_cols)
 
@@ -703,14 +740,24 @@
 #'
 #' @noRd
 .dataset_var_names <- function(path) {
-    setdiff(.dataset_col_names(path), c("mz", "intensity"))
+    setdiff(.dataset_col_names(path), .dataset_peak_names(path))
 }
 
 #' List the peak variable names present in the dataset.
 #'
+#' `mz` and `intensity`, followed by any other list column of a native run:
+#' a peak-annotation variable (signal-to-noise, contributor counts, ...)
+#' stored parallel to them, one element per peak. Only native datasets hold
+#' list columns; an mzPeak index holds one row per spectrum.
+#'
 #' @noRd
 .dataset_peak_names <- function(path) {
-    intersect(.dataset_col_names(path), c("mz", "intensity"))
+    con <- .duckdb_con()
+    view <- .quote_ident(.dataset_view(path))
+    d <- dbGetQuery(con, paste0("DESCRIBE SELECT * FROM ", view))
+    lists <- d$column_name[endsWith(d$column_type, "[]")]
+    c(intersect(c("mz", "intensity"), d$column_name),
+      setdiff(lists, c("mz", "intensity")))
 }
 
 #' Compute the (sorted) integer vector of all spectrum IDs in the
