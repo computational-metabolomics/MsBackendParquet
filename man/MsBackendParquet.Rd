@@ -299,7 +299,11 @@ path, one element per spectrum.
 \item \code{intensity()} / \code{mz()}: return \code{\link[IRanges:NumericList]{IRanges::NumericList()}} objects.
 \item \verb{intensity<-} / \verb{mz<-}: not supported.
 \item \code{peaksData()}: returns a \code{list} of two-column matrices.
-\item \code{peaksVariables()}: returns \code{c("mz", "intensity")}.
+\item \code{peaksVariables()}: returns \code{c("mz", "intensity")}, followed by any
+peak-annotation variable a native dataset stores beside them: a list
+column with one value per peak, such as a merged spectrum's per-peak
+signal-to-noise. Such variables are written by passing them as list
+columns in \code{data} to \code{createMsBackendParquetDataset()}.
 \item \code{reset()}: re-initialises the backend from disk and drops cached
 spectra variables.
 \item \code{spectraData()}: returns a \code{DataFrame} with the requested spectra

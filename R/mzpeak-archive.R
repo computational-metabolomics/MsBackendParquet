@@ -49,22 +49,25 @@
 .mzpeak_read_index <- function(dir) {
     fl <- .mzpeak_index_path(dir)
     if (!file.exists(fl))
-        stop("'", dir, "' is not an mzPeak archive: no ",
-             .MZPEAK_INDEX_FILE, ".", call. = FALSE)
+        mzstackError("archive",
+                     "'", dir, "' is not an mzPeak archive: no ",
+                     .MZPEAK_INDEX_FILE, ".")
     idx <- tryCatch(
         jsonlite::fromJSON(fl, simplifyVector = TRUE,
                            simplifyDataFrame = TRUE),
         error = function(e)
-            stop("Could not parse '", fl, "': ", conditionMessage(e),
-                 call. = FALSE))
+            mzstackError("archive",
+                         "Could not parse '", fl, "': ", conditionMessage(e)))
     if (!is.list(idx) || is.null(idx$files))
-        stop("'", fl, "' has no 'files' member.", call. = FALSE)
+        mzstackError("archive",
+                     "'", fl, "' has no 'files' member.")
     files <- idx$files
     if (!is.data.frame(files))
         files <- as.data.frame(files, stringsAsFactors = FALSE)
     if (!all(c("name", "entity_type", "data_kind") %in% colnames(files)))
-        stop("'", fl, "' entries must have 'name', 'entity_type' and ",
-             "'data_kind'.", call. = FALSE)
+        mzstackError("archive",
+                     "'", fl, "' entries must have 'name', 'entity_type' and ",
+                     "'data_kind'.")
     idx$files <- files
     idx
 }
@@ -115,8 +118,9 @@
         return(NA_character_)
     p <- file.path(dir, nm[1L])
     if (!file.exists(p))
-        stop("'", .MZPEAK_INDEX_FILE, "' of '", dir, "' lists '", nm[1L],
-             "' but the file does not exist.", call. = FALSE)
+        mzstackError("archive",
+                     "'", .MZPEAK_INDEX_FILE, "' of '", dir, "' lists '",
+                     nm[1L], "' but the file does not exist.")
     p
 }
 
@@ -378,27 +382,30 @@
     idx <- .mzpeak_read_index(dir)
     meta <- .mzpeak_member_path(dir, idx, "spectrum", "metadata")
     if (is.na(meta))
-        stop("Archive '", dir, "' has no spectrum metadata table.",
-             call. = FALSE)
+        mzstackError("archive",
+                     "Archive '", dir, "' has no spectrum metadata table.")
     profile <- .mzpeak_member_path(dir, idx, "spectrum", "data_arrays")
     centroid <- .mzpeak_member_path(dir, idx, "spectrum", "peaks")
     if (is.na(profile) && is.na(centroid))
-        stop("Archive '", dir, "' has neither spectrum signal data nor ",
-             "peak data.", call. = FALSE)
+        mzstackError("archive",
+                     "Archive '", dir, "' has neither spectrum signal data ",
+                     "nor peak data.")
 
     layout <- NA_character_
     for (sig in c(profile, centroid)) {
         if (is.na(sig)) next
         l <- .mzpeak_layout(sig)
         if (identical(l, "chunk"))
-            stop("Archive '", dir, "' stores signal in the chunked layout, ",
-                 "which MsBackendParquet cannot read yet. Only the point ",
-                 "layout is supported.", call. = FALSE)
+            mzstackError("archive",
+                         "Archive '", dir, "' stores signal in the chunked ",
+                         "layout, which MsBackendParquet cannot read yet. ",
+                         "Only the point layout is supported.")
         if (is.na(layout)) layout <- l
     }
     if (is.na(layout))
-        stop("Could not determine the signal layout of archive '", dir, "'.",
-             call. = FALSE)
+        mzstackError("archive",
+                     "Could not determine the signal layout of archive '",
+                     dir, "'.")
 
     list(dir = dir,
          index = idx,
@@ -477,6 +484,7 @@
     hit <- subs[vapply(subs, .mzpeak_is_archive, logical(1))]
     if (length(hit) == 1L)
         return(hit)
-    stop("No ", .MZPEAK_INDEX_FILE, " found after unpacking '", zipfile,
-         "'.", call. = FALSE)
+    mzstackError("archive",
+                 "No ", .MZPEAK_INDEX_FILE, " found after unpacking '", zipfile,
+                 "'.")
 }

@@ -94,6 +94,8 @@ test_that("a dataset without a manifest is refused, not half-opened", {
                  "mzStack.json", fixed = TRUE)
     expect_error(backendInitialize(MsBackendParquet(), path = legacy),
                  "re-created")
+    expect_error(backendInitialize(MsBackendParquet(), path = legacy),
+                 class = "mzstack_format")
 })
 
 test_that("a manifest of a foreign format or major version is rejected", {
@@ -107,6 +109,7 @@ test_that("a manifest of a foreign format or major version is rejected", {
              runs = list()), auto_unbox = TRUE),
         file.path(other, "mzStack.json"))
     expect_error(.manifest_read(other), "declares format")
+    expect_error(.manifest_read(other), class = "mzstack_format")
 
     future <- file.path(root, "future")
     dir.create(future)
@@ -156,4 +159,5 @@ test_that("a mixed-kind manifest is rejected rather than guessed at", {
     m <- .manifest_add_run(m, "B", "native", "/tmp/b", 2L, "list")
     .manifest_write(ds, m)
     expect_error(.dataset_kind(ds), "mixes run kinds")
+    expect_error(.dataset_kind(ds), class = "mzstack_format")
 })

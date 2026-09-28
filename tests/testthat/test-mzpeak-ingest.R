@@ -44,6 +44,7 @@ test_that("the chunked layout is refused with a message naming the archive", {
     .make_mzpeak_archive(d, n = 2L, run_id = "C", layout = "chunk")
     expect_error(.mzpeak_validate(d), "chunked layout")
     expect_error(.mzpeak_validate(d), "chunky")
+    expect_error(.mzpeak_validate(d), class = "mzstack_archive")
 })
 
 test_that("a directory that is not an archive is refused", {
