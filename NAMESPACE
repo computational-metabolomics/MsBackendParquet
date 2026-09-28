@@ -44,42 +44,57 @@ exportMethods(uniqueMsLevels)
 importClassesFrom(BiocParallel,MulticoreParam)
 importClassesFrom(S4Vectors,DataFrame)
 importClassesFrom(Spectra,MsBackendCached)
-importFrom(BiocParallel,SerialParam)
-importFrom(BiocParallel,bpparam)
+importFrom(BiocParallel,
+  SerialParam,
+  bpparam
+)
 importFrom(IRanges,NumericList)
-importFrom(MsCoreUtils,i2index)
-importFrom(MsCoreUtils,ppm)
-importFrom(MsCoreUtils,rbindFill)
-importFrom(MsCoreUtils,vapply1d)
-importFrom(MsCoreUtils,vapply1l)
+importFrom(MsCoreUtils,
+  i2index,
+  ppm,
+  rbindFill,
+  vapply1d,
+  vapply1l
+)
 importFrom(S4Vectors,make_zero_col_DFrame)
-importFrom(Spectra,MsBackendMzR)
-importFrom(Spectra,Spectra)
-importFrom(Spectra,coreSpectraVariables)
-importFrom(Spectra,intensity)
-importFrom(Spectra,peaksData)
-importFrom(Spectra,processingChunkFactor)
-importFrom(Spectra,spectraData)
-importFrom(Spectra,spectraVariables)
-importFrom(arrow,FileOutputStream)
-importFrom(arrow,ParquetFileWriter)
-importFrom(arrow,ParquetWriterProperties)
-importFrom(arrow,as_arrow_table)
-importFrom(arrow,write_dataset)
-importFrom(arrow,write_parquet)
-importFrom(duckdb,duckdb)
-importFrom(duckdb,duckdb_register)
-importFrom(duckdb,duckdb_unregister)
-importFrom(methods,"slot<-")
-importFrom(methods,as)
-importFrom(methods,callNextMethod)
-importFrom(methods,getMethod)
-importFrom(methods,is)
-importFrom(methods,new)
-importFrom(methods,validObject)
+importFrom(Spectra,
+  MsBackendMzR,
+  Spectra,
+  coreSpectraVariables,
+  intensity,
+  peaksData,
+  processingChunkFactor,
+  spectraData,
+  spectraVariables
+)
+importFrom(arrow,
+  FileOutputStream,
+  ParquetFileWriter,
+  ParquetWriterProperties,
+  as_arrow_table,
+  write_dataset,
+  write_parquet
+)
+importFrom(duckdb,
+  duckdb,
+  duckdb_register,
+  duckdb_unregister
+)
+importFrom(methods,
+  "slot<-",
+  as,
+  callNextMethod,
+  getMethod,
+  is,
+  new,
+  validObject
+)
 importFrom(mzR,openMSfile)
-importFrom(tools,file_ext)
-importFrom(tools,file_path_sans_ext)
+importFrom(progress,progress_bar)
+importFrom(tools,
+  file_ext,
+  file_path_sans_ext
+)
 importMethodsFrom(DBI,dbConnect)
 importMethodsFrom(DBI,dbExecute)
 importMethodsFrom(DBI,dbGetQuery)

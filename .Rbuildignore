@@ -14,3 +14,4 @@
 ^doc$
 ^Meta$
 ^inst/benchmarks/results$
+^local_data/

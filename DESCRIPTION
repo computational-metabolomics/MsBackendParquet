@@ -42,7 +42,8 @@ Imports:
     S4Vectors,
     stats,
     tools,
-    utils
+    utils,
+    progress
 Suggests:
     BiocStyle,
     bench,

@@ -546,6 +546,8 @@ mzMLToParquet <- function(
 #' Similar to `.insert_from_spectra()` but driven by a chunk factor and
 #' a parent `Spectra` object. Used by `setBackend()`.
 #'
+#' @importFrom progress progress_bar
+#' 
 #' @noRd
 .set_backend_insert_data <- function(object, f = NULL, path,
                                      partitioning = character(),
@@ -574,6 +576,11 @@ mzMLToParquet <- function(
     partitioning <- .effective_partitioning(partitioning, blocked)
 
     acc <- .native_acc(partitioning)
+    pb <- progress_bar$new(format = paste0("[:bar] :current/:",
+                                           "total (:percent) in ",
+                                           ":elapsed"),
+                           total = length(blocks), clear = FALSE, force = TRUE)
+    pb$tick(0)
     for (b in blocks) {
         dir <- .run_dir(path, b$run_id)
         base <- acc$next_id + 1L
@@ -592,6 +599,7 @@ mzMLToParquet <- function(
         }
         acc <- .native_acc_add(acc, b$run_id, dir, acc$next_id - base + 1L,
                                b$origin)
+        pb$tick(1)
     }
     .manifest_write_native(path, acc$runs, partitioning = acc$partitioning)
     invisible(path)
