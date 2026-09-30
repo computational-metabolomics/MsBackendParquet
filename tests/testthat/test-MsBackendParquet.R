@@ -83,6 +83,11 @@ test_that("locally cached variables shadow the on-disk dataset", {
     be$flag <- c("a", "b", "c")
     expect_true("flag" %in% spectraVariables(be))
     expect_equal(spectraData(be, "flag")[[1L]], c("a", "b", "c"))
+    ## Support overwriting existing values
+    be$rtime <- c(12.2, 15.4, 16.3)
+    expect_equal(rtime(be), c(12.2, 15.4, 16.3))
+    expect_equal(be$rtime, c(12.2, 15.4, 16.3))
+    expect_equal(spectraData(be, "rtime")[, 1L], c(12.2, 15.4, 16.3))
 })
 
 test_that("dataset can be partitioned below the run", {

@@ -82,6 +82,3 @@ m$role <- "study"
 m <- writeManifest(ds, m)
 m$generation
 }
-\author{
-Ossama Edbali
-}

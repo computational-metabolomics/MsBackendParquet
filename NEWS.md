@@ -1,3 +1,11 @@
+# MsBackendParquet 0.99.8
+
+- Don't rename spectra metadata columns `"lowMZ"`, `"highMZ"` and `"basePeakMZ"`
+  to `"lowMz"`, `"highMz"` and `"basePeakMz"` to be compliant with *Spectra* and
+  *mzR*.
+- `spectraData()` to return `mz` and `intensity` as uncompressed `NumericList`.
+- Add additional unit tests.
+
 # MsBackendParquet 0.99.7
 
 ## Bug fixes
