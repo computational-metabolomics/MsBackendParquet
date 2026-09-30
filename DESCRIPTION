@@ -1,6 +1,6 @@
 Package: MsBackendParquet
 Title: Apache Parquet-based Mass Spectrometry Data Backend
-Version: 0.99.7
+Version: 0.99.8
 Authors@R: c(
     person(
         "Ossama",

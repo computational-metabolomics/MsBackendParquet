@@ -68,6 +68,3 @@ res <- tryCatch(mzstackError("capability", "no such table"),
                 mzstack_capability = function(e) conditionMessage(e))
 res
 }
-\author{
-Ossama Edbali
-}

@@ -462,6 +462,9 @@
 #' `NumericList(compress = FALSE)` costs 519 ms, because the latter has to keep
 #' a separate R vector per spectrum.
 #'
+#' Accessing elements from and iterating/processing an uncompressed
+#' `NumericList` is however faster.
+#'
 #' @importFrom IRanges NumericList
 #' 
 #' @noRd
@@ -469,8 +472,8 @@
     if (!length(.ids(x))) {
         return(NumericList(compress = TRUE))
     }
-    vals <- .fetch_peaks_data(x, columns = column, drop = TRUE)
-    NumericList(vals, compress = TRUE)
+    vals <- .fetch_peaks_data(x, columns = column, drop = FALSE)
+    NumericList(vals, compress = FALSE)
 }
 
 #' Combine separate `mz` / `intensity` list columns into the list-of-
@@ -536,9 +539,8 @@
 .spectra_data_parquet <- function(x, columns = spectraVariables(x)) {
     res <- getMethod(
         "spectraData", "MsBackendCached")(x, columns = columns)
-    if (is.null(res)) {
+    if (is.null(res))
         res <- make_zero_col_DFrame(length(x))
-    }
     pk <- .peaks_variables(x)
     ds_cols <- intersect(columns, x@spectraVariables)
     ds_cols <- ds_cols[!ds_cols %in% c(pk, colnames(res))]

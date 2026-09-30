@@ -79,11 +79,11 @@
         # and downstream code (including SpectraQL) looks for them.
         r("totIonCurrent", '"total_ion_current"', "total_ion_current",
           "DOUBLE"),
-        r("basePeakMz", '"base_peak_mz"', "base_peak_mz", "DOUBLE"),
+        r("basePeakMZ", '"base_peak_mz"', "base_peak_mz", "DOUBLE"),
         r("basePeakIntensity", '"base_peak_intensity"',
           "base_peak_intensity", "DOUBLE"),
-        r("lowMz", '"lowest_observed_mz"', "lowest_observed_mz", "DOUBLE"),
-        r("highMz", '"highest_observed_mz"', "highest_observed_mz", "DOUBLE"),
+        r("lowMZ", '"lowest_observed_mz"', "lowest_observed_mz", "DOUBLE"),
+        r("highMZ", '"highest_observed_mz"', "highest_observed_mz", "DOUBLE"),
         # Whichever representation this spectrum actually stores. An archive
         # holding only profile data has no `number_of_peaks` column at all,
         # so the three candidates are tried in order and the first whose
@@ -153,10 +153,10 @@
         m("collisionEnergy", "collision_energy"),
         m("isolationWindowTargetMz", "isolation_window_target"),
         m("totIonCurrent", "total_ion_current"),
-        m("basePeakMz", "base_peak_mz"),
+        m("basePeakMZ", "base_peak_mz"),
         m("basePeakIntensity", "base_peak_intensity"),
-        m("lowMz", "lowest_observed_mz"),
-        m("highMz", "highest_observed_mz"),
+        m("lowMZ", "lowest_observed_mz"),
+        m("highMZ", "highest_observed_mz"),
         m("peaksCount", "number_of_data_points"),
         m("injectionTime", "ion_injection_time"),
         m("filterString", "filter_string"),

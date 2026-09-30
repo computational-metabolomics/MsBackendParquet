@@ -1,0 +1,357 @@
+---
+title: "Performance evaluation and comparison against MsBackendSql"
+output:
+  html_document: default
+---
+
+# Introduction
+
+Compare performance and properties of `MsBackendParquet` compared to
+`MsBackendMzR` or `MsBackendSql` on a large data set. This comparison evaluates
+benefits of the individual backends when analyzing large-scale mass spectrometry
+data. If not otherwise stated, all tests are performed without parallel
+processing on a single CPU core.
+
+## MTBLS93
+
+The data set: a subset of 1000 files from MTBLS93 MetaboLights data set.
+
+### Preparing and loading the data
+
+Loading the reference data and creating the data storage modes for the SQLite
+and the Parquet-based formats. The code chunks to create the `MsBackendSql` and
+`MsBackendParquet`-based formats need only to be run once. After the first
+code evaluation the prepared data sets are loaded.
+
+```{r, message = FALSE}
+library(Spectra)
+library(MsBackendMetaboLights)
+register(SerialParam())
+
+sps <- Spectra(mtblsId = "MTBLS93", filePattern = "01.CDF$",
+               source = MsBackendMetaboLights())
+sps1000_mzr <- filterDataOrigin(sps, unique(dataOrigin(sps))[1:1000])
+```
+
+Define the folder where to store the SQLite and Parquet files.
+
+```{r}
+## Set the data storage path.
+local_path <- "~/tmp/"
+sqlite_file <- file.path(local_path, "sps1000.sqlite")
+parquet_file <- file.path(local_path, "sps1000.parquet")
+```
+
+Create a `MsBackendSql` version of the data. These code chunks
+
+```{r, eval = !file.exists(sqlite_file), message = FALSE}
+library(RSQLite)
+library(MsBackendSql)
+con <- dbConnect(SQLite(), sqlite_file)
+system.time(
+    sps1000_sql <- setBackend(sps1000_mzr, MsBackendSql(), dbcon = con)
+)
+```
+
+Create a `MsBackendParquet` version of the data.
+
+```{r, eval = !file.exists(parquet_file), message = FALSE}
+library(MsBackendParquet)
+system.time(
+    sps1000_prq <- setBackend(sps1000_mzr, MsBackendParquet(),
+                              path = parquet_file)
+)
+```
+
+We next load the data also through the `MsBackendOfflineSql` and
+`MsBackendParquet` backends.
+
+```{r}
+library(RSQLite)
+library(MsBackendSql)
+library(MsBackendParquet)
+
+sps1000_sql <- Spectra(sqlite_file,
+                       source = MsBackendOfflineSql(), drv = SQLite())
+sps1000_prq <- Spectra(parquet_file, source = MsBackendParquet())
+```
+
+#### Compare sizes
+
+We next compare the object and file sizes for the various backends.
+
+```{r}
+print(object.size(sps1000_mzr), units = "MB")
+print(object.size(sps1000_sql), units = "MB")
+print(object.size(sps1000_prq), units = "MB")
+```
+
+Both the `MsBackendSql` and `MsBackendParquet` have similar object size, while
+the `MsBackendMzR` is considerably larger. We next compare the file sizes on
+disk:
+
+```{r, message = FALSE}
+library(fs)
+file_size(sqlite_file)
+
+sum(file_size(dir(
+    parquet_file, recursive = TRUE, full.names = TRUE)))
+```
+
+The `MsBackendParquet` uses about half of the disk space `MsBackendSql`
+requires.
+
+#### Extract spectra data
+
+We compare the timing to extract the **full** `spectraData()`. We disable
+parallel processing.
+
+```{r}
+register(SerialParam())
+library(microbenchmark)
+
+microbenchmark(
+    a <- spectraData(sps1000_mzr),
+    b <- spectraData(sps1000_sql),
+    c <- spectraData(sps1000_prq),
+    times = 7
+)
+## Compare object sizes...
+print(object.size(sps1000_sql), units = "MB")
+print(object.size(sps1000_prq), units = "MB")
+```
+
+`MsBackendParquet` is considerably (about 2-3 times) faster than
+`MsBackendSql`. Because the full data is already in memory `MsBackendMzR`
+outperforms both.
+
+We next compare the performance to extract selected, commonly used, spectra
+variables.
+
+```{r}
+microbenchmark(
+    a <- sps1000_mzr$rtime,
+    b <- sps1000_sql$rtime,
+    c <- sps1000_prq$rtime,
+    times = 7
+)
+
+library(testthat)
+expect_equal(a, b)
+expect_equal(b, c)
+```
+
+`MsBackendParquet` is considerably faster than the `MsBackendSql` backend.
+
+#### Extract peaks data
+
+Extracting the peaks data from the full data set would exceed the computers main
+memory. We have thus to extract the peaks data from a subset of 50 files
+instead (with 100 we also hit the limit of over 96GB main memory).
+
+```{r}
+sps50_mzr <- filterDataOrigin(
+    sps1000_mzr, unique(dataOrigin(sps1000_mzr))[1:50])
+sps50_sql <- filterDataOrigin(
+    sps1000_sql, unique(dataOrigin(sps1000_sql))[1:50])
+sps50_prq <- filterDataOrigin(
+    sps1000_prq, unique(dataOrigin(sps1000_prq))[1:50])
+
+library(peakRAM)
+peakRAM(
+    peaksData(sps50_mzr),
+    peaksData(sps50_sql),
+    peaksData(sps50_prq)
+)
+```
+
+`MsBackendParquet` shows the highest performance followed by
+`MsBackendMzR`. `MsBackendSql` is considerably slower.
+
+#### Extract spectra data a small random subset
+
+We restrict the data sets to a small set of random spectra (in arbitrary order).
+
+```{r}
+set.seed(123)
+idx <- sample(seq_along(sps1000_mzr), 100)
+
+s_mzr <- sps1000_mzr[idx]
+s_sql <- sps1000_sql[idx]
+s_prq <- sps1000_prq[idx]
+
+microbenchmark(
+    spectraData(s_mzr),
+    spectraData(s_sql),
+    spectraData(s_prq),
+    times = 7
+)
+```
+
+For these small random subsets `MsBackendMzR` shows the highest performance
+followed by `MsBackendSql` while `MsBackendParquet` is considerably (about 100
+times) slower.
+
+We repeat the same comparison for a single spectra variable.
+
+```{r}
+microbenchmark(
+    a <- s_mzr$rtime,
+    b <- s_sql$rtime,
+    c <- s_prq$rtime,
+    times = 7
+)
+expect_equal(a, b)
+expect_equal(b, c)
+```
+
+For the single spectra variable the performances are somewhat comparable, with
+`MsBackendSql` showing the lowest performance.
+
+#### Extract peaks data for a small random subset
+
+We next compare the performance extracting peaks data from the random subsets.
+
+```{r}
+microbenchmark(
+    a <- peaksData(s_mzr),
+    b <- peaksData(s_sql),
+    c <- peaksData(s_prq),
+    times = 7
+)
+expect_equal(a, b)
+expect_equal(b, c)
+```
+
+There are huge differences in the performances of the different
+backends. `MsBackendSql` is by far the fastest backend.
+
+
+#### Extract spectra data for a retention time subset
+
+We repeat the comparison for a second, more realistic, subset: all spectra
+within a small retention time range.
+
+```{r}
+s_mzr <- filterRt(sps1000_mzr, c(3, 4))
+s_sql <- filterRt(sps1000_sql, c(3, 4))
+s_prq <- filterRt(sps1000_prq, c(3, 4))
+```
+
+```{r}
+microbenchmark(
+    spectraData(s_mzr),
+    spectraData(s_sql),
+    spectraData(s_prq),
+    times = 7
+)
+```
+
+`MsBackendMzR` and `MsBackendSql` outperform the `MsBackendParquet` for this
+operation. We repeat the comparison for a single spectra variable.
+
+```{r}
+microbenchmark(
+    a <- s_mzr$rtime,
+    b <- s_sql$rtime,
+    c <- s_prq$rtime,
+    times = 7
+)
+expect_equal(a, b)
+expect_equal(b, c)
+```
+
+For the single spectra variable the `MsBackendSql` performs less well.
+
+#### Extract peaks data for a retention time subset
+
+We next compare the performance extracting peaks data from the subsets.
+
+```{r}
+peakRAM(
+    a <- peaksData(s_mzr),
+    b <- peaksData(s_sql),
+    c <- peaksData(s_prq)
+)
+expect_equal(a, b)
+expect_equal(b, c)
+```
+
+The `MsBackendSql` shows the highest performance, about 3 times faster than the
+`MsBackendParquet`. The `MsBackendMzR` is by far the slowest due to the cost of
+opening and reading each of the 1000 netCDF files.
+
+#### Extract spectra data for a single data file of a large dataset
+
+Finally, we evaluate performance on a subset of the large data representing
+spectra from the (same) originating file.
+
+```{r}
+s_mzr <- filterDataOrigin(sps1000_mzr, unique(dataOrigin(sps1000_mzr))[13L])
+s_sql <- filterDataOrigin(sps1000_sql, unique(dataOrigin(sps1000_sql))[13L])
+s_prq <- filterDataOrigin(sps1000_prq, unique(dataOrigin(sps1000_prq))[13L])
+```
+
+```{r}
+microbenchmark(
+    spectraData(s_mzr),
+    spectraData(s_sql),
+    spectraData(s_prq),
+    times = 7
+)
+```
+
+Similar to the other data subsets, `MsBackendParquet` is slowest when the full
+spectra data is extracted, even if only for one data file.
+
+```{r}
+microbenchmark(
+    a <- s_mzr$rtime,
+    b <- s_sql$rtime,
+    c <- s_prq$rtime,
+    times = 7
+)
+expect_equal(a, b)
+expect_equal(b, c)
+```
+
+In contrast, extracting a single column/spectra variable is very fast with
+`MsBackendParquet`, while `MsBackendSql` takes about 4 times longer.
+
+#### Extract peaks data for a single data file of a large dataset
+
+We next compare the performance extracting peaks data from the subsets.
+
+```{r}
+microbenchmark(
+    a <- peaksData(s_mzr),
+    b <- peaksData(s_sql),
+    c <- peaksData(s_prq),
+    times = 7
+)
+expect_equal(a, b)
+expect_equal(b, c)
+```
+
+The performances of `MsBackendMzR` and `MsBackendParquet` are comparable, while
+`MsBackendSql` is about 8 times faster than both.
+
+## Summary
+
+- `MsBackendParquet` shows higher performance extracting single spectra
+  variables or also peaks data from a large data set or large subsets of
+  that data.
+- `MsBackendParquet` uses about half of the disk space required by
+  `MsBackendSql`.
+- The performance of `MsBackendSql` is higher when data from a small (or
+  unordered) subset of data is requested (or from a single file of a larger data
+  set).
+- `MsBackendSql` stores all data in a single database, thus, extracting random
+  data from that database is faster because it avoids opening and accessing data
+  from different files.
+
+# Session information
+
+```{r}
+sessionInfo()
+```
