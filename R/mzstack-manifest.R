@@ -461,7 +461,8 @@
 #' Write the manifest for a dataset converted from raw MS data files.
 #'
 #' One run per source file, each covering its own `spectra/run_id=<id>`
-#' directory, in the order they were written.
+#' directory, in the order they were written. Run paths are recorded relative
+#' to the dataset.
 #'
 #' @param runs `list` of `list(run_id, path, n_spectra)`, in write order.
 #'
@@ -478,7 +479,7 @@
             next
         m <- .manifest_add_run(
             m, run_id = r$run_id, kind = "native",
-            path = normalizePath(r$path, mustWork = FALSE),
+            path = .run_rel_dir(r$run_id),
             n_spectra = n, layout = "list", partitioning = partitioning,
             uid_base = base, source = r$source %||% NA_character_)
         base <- base + n
@@ -610,7 +611,10 @@
 #'   written to a temporary file and renamed into place, so a reader never
 #'   observes a half-written manifest. It increments `generation`, refuses to
 #'   overwrite a manifest another writer has committed since `manifest` was
-#'   read, and drops every cache this package holds for the dataset.
+#'   read, and drops every cache this package holds for the dataset. The
+#'   check and the replacement are serialised by a lock directory,
+#'   `mzStack.json.lock`; a held lock or a changed `generation` raises a
+#'   `mzstack_conflict` error and writes nothing.
 #'   Numbers are written so that they read back exactly. Where `path` holds
 #'   no manifest yet, the directory is created if needed and `manifest` is
 #'   written as the dataset's first, without incrementing `generation`.
@@ -682,27 +686,61 @@ writeManifest <- function(path, manifest, bump = TRUE) {
         !identical(as.character(manifest$format)[1L], .MZSTACK_FORMAT))
         stop("'manifest' must be an mzStack manifest as returned by ",
              "readManifest() or newManifest().", call. = FALSE)
-    if (is.character(path) && length(path) == 1L && !is.na(path) &&
-        !.is_mzstack_dataset(path)) {
+    first <- is.character(path) && length(path) == 1L && !is.na(path) &&
+        !.is_mzstack_dataset(path)
+    if (first) {
+        if (!dir.exists(path))
+            dir.create(path, recursive = TRUE)
+    } else {
+        path <- .as_dataset_path(path)
+    }
+    lock <- .manifest_lock(path)
+    on.exit(unlink(lock, recursive = TRUE), add = TRUE)
+    if (first) {
         # The first manifest is what makes the directory a dataset, so there
-        # is no earlier version to conflict with or to count on from.
+        # is no earlier version to count on from; another writer may still
+        # have committed one since the check above.
+        if (.is_mzstack_dataset(path))
+            mzstackError("conflict",
+                         "Another writer committed a manifest to '", path,
+                         "' while this one was being prepared. Re-read it ",
+                         "and re-apply the change.")
         .manifest_write(path, manifest)
         path <- normalizePath(path)
         .invalidate_dataset_cache(path)
         return(invisible(manifest))
     }
-    path <- .as_dataset_path(path)
     on_disk <- .manifest_read(path)$generation
     if (!identical(as.integer(manifest$generation), on_disk))
-        stop("The manifest of '", path, "' is at generation ", on_disk,
-             " but 'manifest' was read at generation ", manifest$generation,
-             ": another writer has committed since. Re-read it and re-apply ",
-             "the change.", call. = FALSE)
+        mzstackError("conflict",
+                     "The manifest of '", path, "' is at generation ",
+                     on_disk, " but 'manifest' was read at generation ",
+                     manifest$generation, ": another writer has committed ",
+                     "since. Re-read it and re-apply the change.",
+                     data = list(generation = on_disk))
     if (isTRUE(bump))
         manifest <- .manifest_bump_generation(manifest)
     .manifest_write(path, manifest)
     .invalidate_dataset_cache(path)
     invisible(manifest)
+}
+
+#' Take the lock that serialises manifest commits.
+#'
+#' A directory beside the manifest: creating it is atomic, so exactly one
+#' writer succeeds. The caller removes it once its write is done.
+#'
+#' @return the lock path.
+#'
+#' @noRd
+.manifest_lock <- function(path) {
+    lock <- paste0(.manifest_path(path), ".lock")
+    if (!dir.create(lock, showWarnings = FALSE))
+        mzstackError("conflict",
+                     "Another writer holds '", lock, "'. Retry once it has ",
+                     "finished, or remove a stale lock.",
+                     data = list(lock = lock))
+    lock
 }
 
 #' @rdname mzstack-manifest

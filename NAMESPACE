@@ -80,6 +80,7 @@ importFrom(arrow,
   ParquetFileWriter,
   ParquetWriterProperties,
   as_arrow_table,
+  int64,
   write_dataset,
   write_parquet
 )
