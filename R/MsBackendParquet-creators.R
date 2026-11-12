@@ -16,9 +16,11 @@
 #' `<path>/spectra`) containing the spectra metadata plus the m/z and
 #' intensity values as Parquet `list<double>` columns.
 #'
-#' Spectra metadata that are entirely `NA` (and not part of the Spectra
-#' core variables) are dropped before writing to keep the on-disk
-#' dataset compact.
+#' With `data`, only the columns it carries are written, and a core
+#' Spectra variable that is entirely `NA` is not written at all; the
+#' backend reports a core variable without a column as missing values.
+#' Other columns, including list columns of peak annotations, are written
+#' as given.
 #'
 #' Each source file becomes its own run, written to
 #' `<path>/spectra/run_id=<id>/`. If `partitioning` is supplied
@@ -477,11 +479,10 @@ mzMLToParquet <- function(
     }
     data <- as.data.frame(data)
     core_vars <- names(coreSpectraVariables())
+    # Only the columns `data` carries are written: the read view reports a
+    # core variable with no column as typed missing values.
     data <- .drop_all_na_columns(data, keep = setdiff(colnames(data),
                                                      core_vars))
-    if (!"msLevel" %in% colnames(data)) data$msLevel <- NA_integer_
-    if (!"rtime" %in% colnames(data)) data$rtime <- NA_real_
-    if (!"precursorMz" %in% colnames(data)) data$precursorMz <- NA_real_
     had_origin <- "dataOrigin" %in% colnames(data)
     if (!had_origin)
         data$dataOrigin <- "<mzStack>"
@@ -928,7 +929,7 @@ mzMLToParquet <- function(
                                   formatC(b, width = 5, flag = "0"),
                                   "-{i}.parquet"))
         } else {
-            tbl <- as_arrow_table(batch_df)
+            tbl <- .spectra_arrow_table(batch_df)
             if (is.null(writer)) {
                 schema <- tbl$schema
                 sink <- FileOutputStream$create(
@@ -980,7 +981,7 @@ mzMLToParquet <- function(
                                  compression,
                                  row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                                  basename) {
-    tbl <- as_arrow_table(batch_df)
+    tbl <- .spectra_arrow_table(batch_df)
     write_dataset(
         tbl, path = dest, format = "parquet",
         partitioning = partitioning,

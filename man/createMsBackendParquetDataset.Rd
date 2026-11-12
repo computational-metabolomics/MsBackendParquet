@@ -88,9 +88,11 @@ The function writes a single Parquet dataset (under
 \verb{<path>/spectra}) containing the spectra metadata plus the m/z and
 intensity values as Parquet \verb{list<double>} columns.
 
-Spectra metadata that are entirely \code{NA} (and not part of the Spectra
-core variables) are dropped before writing to keep the on-disk
-dataset compact.
+With \code{data}, only the columns it carries are written, and a core
+Spectra variable that is entirely \code{NA} is not written at all; the
+backend reports a core variable without a column as missing values.
+Other columns, including list columns of peak annotations, are written
+as given.
 
 Each source file becomes its own run, written to
 \verb{<path>/spectra/run_id=<id>/}. If \code{partitioning} is supplied

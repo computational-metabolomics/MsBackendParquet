@@ -48,7 +48,15 @@
 #'
 #' @noRd
 .run_dir <- function(path, run_id) {
-    file.path(.spectra_path(path), paste0("run_id=", run_id))
+    file.path(path, .run_rel_dir(run_id))
+}
+
+#' A native run's directory relative to the dataset, as the manifest records
+#' it, so that the dataset can be moved or renamed into place.
+#'
+#' @noRd
+.run_rel_dir <- function(run_id) {
+    file.path(.SPECTRA_DIR, paste0("run_id=", run_id))
 }
 
 #' Is `path` a dataset this backend can open?
@@ -692,7 +700,7 @@
     }
 
     rgs <- max(1L, as.integer(row_group_size))
-    tbl <- as_arrow_table(data)
+    tbl <- .spectra_arrow_table(data)
     if (length(partitioning)) {
         # Use a unique basename template per chunk to avoid overwriting
         # previous Parquet parts when appending to an existing
@@ -724,6 +732,21 @@
     }
     .invalidate_dataset_cache(path)
     invisible(TRUE)
+}
+
+#' An Arrow table of spectrum rows in their on-disk types.
+#'
+#' `spectrum_index` is int64, as in an mzPeak archive's own index column, so a
+#' native run and an archive index share one type.
+#'
+#' @importFrom arrow as_arrow_table int64
+#'
+#' @noRd
+.spectra_arrow_table <- function(data) {
+    tbl <- as_arrow_table(data)
+    if ("spectrum_index" %in% names(tbl))
+        tbl[["spectrum_index"]] <- tbl[["spectrum_index"]]$cast(int64())
+    tbl
 }
 
 #' Return the column names of the on-disk dataset. `LIMIT 0` asks DuckDB for

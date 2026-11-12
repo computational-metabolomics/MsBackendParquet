@@ -50,7 +50,10 @@ they survive a read/write cycle unchanged.
 written to a temporary file and renamed into place, so a reader never
 observes a half-written manifest. It increments \code{generation}, refuses to
 overwrite a manifest another writer has committed since \code{manifest} was
-read, and drops every cache this package holds for the dataset.
+read, and drops every cache this package holds for the dataset. The
+check and the replacement are serialised by a lock directory,
+\code{mzStack.json.lock}; a held lock or a changed \code{generation} raises a
+\code{mzstack_conflict} error and writes nothing.
 Numbers are written so that they read back exactly. Where \code{path} holds
 no manifest yet, the directory is created if needed and \code{manifest} is
 written as the dataset's first, without incrementing \code{generation}.
