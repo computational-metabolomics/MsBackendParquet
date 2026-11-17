@@ -95,8 +95,36 @@ test_that("writeManifest() refuses a manifest read before another commit", {
     m1 <- readManifest(path)
     m2 <- readManifest(path)
     writeManifest(path, m1)
-    expect_error(writeManifest(path, m2), "another writer")
+    expect_error(writeManifest(path, m2), "another writer",
+                 class = "mzstack_conflict")
     expect_error(writeManifest(path, list(format = "x")), "readManifest")
+    ## Nothing was written, and the lock was released.
+    expect_identical(readManifest(path)$generation, m1$generation + 1L)
+    expect_false(dir.exists(file.path(path, "mzStack.json.lock")))
+})
+
+test_that("writeManifest() refuses while another writer holds the lock", {
+    be <- .make_test_backend()
+    path <- .path(be)
+    m <- readManifest(path)
+    lock <- file.path(path, "mzStack.json.lock")
+    dir.create(lock)
+    e <- expect_error(writeManifest(path, m), "holds",
+                      class = "mzstack_conflict")
+    expect_identical(normalizePath(e$lock), normalizePath(lock))
+    expect_identical(readManifest(path)$generation, m$generation)
+    ## Its lock is left alone; once released, the write goes through.
+    expect_true(dir.exists(lock))
+    unlink(lock, recursive = TRUE)
+    expect_identical(writeManifest(path, m)$generation, m$generation + 1L)
+    expect_false(dir.exists(lock))
+
+    ## The first manifest of a new dataset takes the same lock.
+    fresh <- tempfile()
+    dir.create(file.path(fresh, "mzStack.json.lock"), recursive = TRUE)
+    expect_error(writeManifest(fresh, newManifest()),
+                 class = "mzstack_conflict")
+    expect_false(file.exists(file.path(fresh, "mzStack.json")))
 })
 
 test_that("writeManifest(bump = FALSE) keeps the generation", {

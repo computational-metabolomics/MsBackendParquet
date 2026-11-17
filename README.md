@@ -35,7 +35,7 @@ Against the other on-disk `Spectra` backends over 380,100 spectra (50 mzML
 files), running the SpectraQL query suite in
 [`inst/benchmarks/`](inst/benchmarks/). Medians in ms, lower is better:
 
-| query | parquet | mzR | HDF5 | SQL |
+| query | MsBackendParquet | MsBackendMzR | MsBackendHdf5Peaks | MsBackendOfflineSql |
 |---|---|---|---|---|
 | `RTMIN/RTMAX` range | **12.24** | 15.44 | 24.05 | 380.19 |
 | narrow RT range | 11.23 | **5.33** | 14.76 | 348.17 |
@@ -141,3 +141,8 @@ they stay readable by every other mzPeak tool. `filterContainsMz()` runs the
 peak search inside the storage engine; `buildProjection()` adds a droppable
 m/z-ordered copy of the signal that speeds it up without changing its result.
 See the vignette for the detail.
+
+## Funding
+
+This work was supported by BioFAIR UK, hosted by Earlham Institute, and
+funded by UK Research and Innovation (UKRI).

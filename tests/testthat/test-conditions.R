@@ -9,13 +9,14 @@ test_that("mzstackError() signals a condition of the named class", {
 })
 
 test_that("every specified class can be raised and caught by name", {
-    for (cl in c("format", "archive", "study", "stale", "unsupported",
-                 "semantic", "capability", "resource"))
+    for (cl in c("format", "archive", "reference", "study", "stale",
+                 "unsupported", "semantic", "capability", "resource",
+                 "conflict"))
         expect_error(mzstackError(cl, "x"), class = paste0("mzstack_", cl))
 })
 
 test_that("an unknown class is refused", {
-    expect_error(mzstackError("reference", "x"), "should be one of")
+    expect_error(mzstackError("nonsense", "x"), "should be one of")
 })
 
 test_that("extra fields travel on the condition", {

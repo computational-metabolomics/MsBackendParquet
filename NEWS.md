@@ -1,10 +1,39 @@
-# MsBackendParquet 0.99.8
+# MsBackendParquet 0.99.11
 
 - Don't rename spectra metadata columns `"lowMZ"`, `"highMZ"` and `"basePeakMZ"`
   to `"lowMz"`, `"highMz"` and `"basePeakMz"` to be compliant with *Spectra* and
   *mzR*.
 - `spectraData()` to return `mz` and `intensity` as uncompressed `NumericList`.
+- Add a progress bar to `createMsBackendParquetDataset()`.
 - Add additional unit tests.
+
+# MsBackendParquet 0.99.10
+
+## Changes
+
+- Native runs record their path relative to the dataset (`spectra/run_id=<id>`), so a dataset can be moved, or written in a staging directory and renamed into place. Manifests with absolute run paths are still read.
+
+- `spectrum_index` is written as int64, the type of an mzPeak archive's own index column. Datasets written with int32 are still read.
+
+- `createMsBackendParquetDataset(data = )` writes only the columns `data` carries. Absent or all-`NA` core variables such as `msLevel`, `rtime` and `precursorMz` are no longer written as columns of missing values; the backend still reports them as missing.
+
+- `writeManifest()` serialises its generation check and replacement with a `mzStack.json.lock` directory lock. A held lock or a manifest committed by another writer raises the new `mzstack_conflict` condition; the message is unchanged.
+
+- New `mzstack_reference` condition, for a declared source dataset that cannot be located, cannot be read or has a different `uid`.
+
+# MsBackendParquet 0.99.9
+
+- Update authors list in DESCRIPTION
+
+# MsBackendParquet 0.99.8
+
+## Changes
+
+- `mzR` moved from Imports to Suggests. It is needed only to read raw MS data files.
+
+- DuckDB and Arrow use at most two threads unless the `MsBackendParquet.threads` option is set.
+
+- Vignette and help pages expanded in response to Bioconductor review.
 
 # MsBackendParquet 0.99.7
 

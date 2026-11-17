@@ -3,6 +3,7 @@
 \name{MsBackendParquet}
 \alias{MsBackendParquet}
 \alias{MsBackendParquet-class}
+\alias{MsBackendParquet-package}
 \alias{backendInitialize,MsBackendParquet-method}
 \alias{backendMerge,MsBackendParquet-method}
 \alias{dataStorage,MsBackendParquet-method}
@@ -193,9 +194,8 @@ identified by guessing from its directory layout.
 The backend uses the \href{https://arrow.apache.org/docs/r}{Apache Arrow}
 R bindings to read and write Parquet files. Spectra metadata together
 with the m/z and intensity values (stored as Parquet \verb{list<double>}
-columns) live in a single directory that can optionally be
-Hive-partitioned (for example by \code{dataOrigin}) to enable Arrow's
-partition pruning and parallel processing.
+columns) live in one directory per run, which can optionally be further
+Hive-partitioned (for example by \code{msLevel}) to enable partition pruning.
 
 New datasets can be created from raw MS data files using
 \code{\link[=createMsBackendParquetDataset]{createMsBackendParquetDataset()}} or by changing the backend of an
@@ -207,6 +207,8 @@ with \code{\link[=createMzPeakDataset]{createMzPeakDataset()}}. In that case the
 they are and are never modified: the dataset holds only a small derived
 index of the spectrum metadata, and peak data is read from the archives
 on demand. See \code{\link[=createMzPeakDataset]{createMzPeakDataset()}} and \code{\link[=filterContainsMz]{filterContainsMz()}}.
+
+See \code{vignette("MsBackendParquet")} for a worked introduction.
 }
 \details{
 The \code{MsBackendParquet} is principally a \emph{read-only} backend; m/z and
@@ -298,12 +300,17 @@ the cached values take precedence over the on-disk ones.
 path, one element per spectrum.
 \item \code{intensity()} / \code{mz()}: return \code{\link[IRanges:NumericList]{IRanges::NumericList()}} objects.
 \item \verb{intensity<-} / \verb{mz<-}: not supported.
+\item \code{centroided()} / \code{smoothed()}: return a \code{logical} vector of length
+\code{length(object)}, \code{NA} where the source data does not say.
 \item \code{peaksData()}: returns a \code{list} of two-column matrices.
 \item \code{peaksVariables()}: returns \code{c("mz", "intensity")}, followed by any
 peak-annotation variable a native dataset stores beside them: a list
 column with one value per peak, such as a merged spectrum's per-peak
 signal-to-noise. Such variables are written by passing them as list
 columns in \code{data} to \code{createMsBackendParquetDataset()}.
+\item \code{precScanNum()}: returns an \code{integer} vector of length \code{length(object)}
+with the scan number of each spectrum's precursor, \code{NA} for spectra
+without one.
 \item \code{reset()}: re-initialises the backend from disk and drops cached
 spectra variables.
 \item \code{spectraData()}: returns a \code{DataFrame} with the requested spectra

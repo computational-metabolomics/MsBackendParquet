@@ -219,3 +219,60 @@ test_that("a manifest that does not account for the dataset is refused", {
                                                n_spectra = 2L))),
         "refusing to write an inconsistent manifest")
 })
+
+test_that("run paths are relative, so a dataset can be moved", {
+    be <- .make_test_backend()
+    path <- .path(be)
+    r <- .manifest_runs(.manifest_read(path))
+    expect_identical(r$path, c("spectra/run_id=file-a",
+                               "spectra/run_id=file-b"))
+    expect_true(all(dir.exists(file.path(path, r$path))))
+
+    moved <- tempfile()
+    expect_true(file.rename(path, moved))
+    back <- backendInitialize(MsBackendParquet(), path = moved)
+    expect_identical(manifestRuns(moved)$path, r$path)
+    expect_true(all(dir.exists(file.path(moved, r$path))))
+    expect_equal(rtime(back), c(1, 2, 3))
+    expect_equal(mz(back)[[3L]], c(102, 112))
+})
+
+test_that("spectrum_index is written as int64 by every writer", {
+    type_of <- function(path) {
+        fl <- list.files(.spectra_path(path), pattern = "\\.parquet$",
+                         recursive = TRUE, full.names = TRUE)
+        unique(vapply(fl, function(f)
+            arrow::open_dataset(f)$schema$spectrum_index$type$ToString(),
+            character(1)))
+    }
+    be <- .make_test_backend()
+    expect_identical(type_of(.path(be)), "int64")
+    be <- .make_test_backend(partitioning = "msLevel")
+    expect_identical(type_of(.path(be)), "int64")
+    expect_equal(spectraData(be, "spectrum_index")[[1L]], c(0, 1, 0))
+
+    skip_if_not_installed("mzR")
+    fl <- system.file("extdata", "demo.mzML", package = "MsBackendParquet")
+    for (engine in c("spectra", "mzr")) {
+        path <- tempfile()
+        suppressMessages(mzMLToParquet(fl, path = path, engine = engine,
+                                       verbose = FALSE))
+        expect_identical(type_of(path), "int64")
+    }
+})
+
+test_that("a data= conversion writes only the columns data carries", {
+    sd <- S4Vectors::DataFrame(dataOrigin = c("lib", "lib"),
+                               x_name = c("a", "b"))
+    sd$mz <- IRanges::NumericList(c(100, 110), 101, compress = FALSE)
+    sd$intensity <- IRanges::NumericList(c(10, 20), 11, compress = FALSE)
+    path <- tempfile()
+    createMsBackendParquetDataset(path = path, data = sd)
+    cols <- arrow::open_dataset(.spectra_path(path))$schema$names
+    expect_false(any(c("ms_level", "time", "selected_ion_mz") %in% cols))
+    be <- backendInitialize(MsBackendParquet(), path = path)
+    expect_identical(msLevel(be), c(NA_integer_, NA_integer_))
+    expect_identical(rtime(be), c(NA_real_, NA_real_))
+    expect_identical(precursorMz(be), c(NA_real_, NA_real_))
+    expect_identical(be$x_name, c("a", "b"))
+})

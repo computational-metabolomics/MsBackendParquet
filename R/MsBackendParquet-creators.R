@@ -16,9 +16,11 @@
 #' `<path>/spectra`) containing the spectra metadata plus the m/z and
 #' intensity values as Parquet `list<double>` columns.
 #'
-#' Spectra metadata that are entirely `NA` (and not part of the Spectra
-#' core variables) are dropped before writing to keep the on-disk
-#' dataset compact.
+#' With `data`, only the columns it carries are written, and a core
+#' Spectra variable that is entirely `NA` is not written at all; the
+#' backend reports a core variable without a column as missing values.
+#' Other columns, including list columns of peak annotations, are written
+#' as given.
 #'
 #' Each source file becomes its own run, written to
 #' `<path>/spectra/run_id=<id>/`. If `partitioning` is supplied
@@ -44,9 +46,11 @@
 #'     processed per iteration.
 #'
 #' @param partitioning `character` with the names of the spectra
-#'     variables to use as Hive partitioning columns. Use an empty
-#'     vector (the default) to write a single un-partitioned set of
-#'     files.
+#'     variables to use as Hive partitioning columns below each run
+#'     (e.g. `"msLevel"`). Use an empty vector (the default) to write a
+#'     single un-partitioned set of files per run. `"dataOrigin"` is
+#'     redundant whenever each source file is already its own run, which
+#'     is always the case for `x`, and is then dropped with a warning.
 #'
 #' @param compression `character(1)` with the Parquet compression codec
 #'     to use. Defaults to `"snappy"`. See
@@ -236,8 +240,10 @@ createMsBackendParquetDataset <- function(
 #'     `MsBackendParquet` dataset, unless `overwrite = TRUE`.
 #'
 #' @param partitioning `character` with the spectra variables to use
-#'     as Hive partitioning columns (e.g. `"dataOrigin"`). Empty
-#'     (default) writes a single un-partitioned set of files.
+#'     as Hive partitioning columns below each run (e.g. `"msLevel"`).
+#'     Empty (default) writes a single un-partitioned set of files per
+#'     run. `"dataOrigin"` is redundant, since each input file is already
+#'     its own run, and is dropped with a warning.
 #'
 #' @param compression `character(1)` Parquet compression codec, passed
 #'     to [arrow::write_parquet()] / [arrow::write_dataset()]. Defaults
@@ -326,6 +332,11 @@ mzMLToParquet <- function(
 
     files <- as.character(files)
     .check_ms_files(files)
+    if (!requireNamespace("mzR", quietly = TRUE)) {
+        stop("Package 'mzR' is required to read raw MS data files. ",
+             "Install it with `BiocManager::install(\"mzR\")`.",
+             call. = FALSE)
+    }
 
     if (.is_parquet_dataset(path)) {
         if (!isTRUE(overwrite)) {
@@ -468,11 +479,10 @@ mzMLToParquet <- function(
     }
     data <- as.data.frame(data)
     core_vars <- names(coreSpectraVariables())
+    # Only the columns `data` carries are written: the read view reports a
+    # core variable with no column as typed missing values.
     data <- .drop_all_na_columns(data, keep = setdiff(colnames(data),
                                                      core_vars))
-    if (!"msLevel" %in% colnames(data)) data$msLevel <- NA_integer_
-    if (!"rtime" %in% colnames(data)) data$rtime <- NA_real_
-    if (!"precursorMz" %in% colnames(data)) data$precursorMz <- NA_real_
     had_origin <- "dataOrigin" %in% colnames(data)
     if (!had_origin)
         data$dataOrigin <- "<mzStack>"
@@ -870,9 +880,8 @@ mzMLToParquet <- function(
 
 #' Stream one mzML file into the dataset.
 #'
-#' @importMethodsFrom mzR header
-#'
-#' @importFrom mzR openMSfile
+#' `mzR` is a suggested package; `.stream_mzml_to_parquet()` checks that it
+#' is installed before calling this.
 #'
 #' @importFrom arrow ParquetFileWriter ParquetWriterProperties FileOutputStream
 #'
@@ -882,9 +891,9 @@ mzMLToParquet <- function(
                              row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                              starting_id) {
     file_abs <- normalizePath(file, mustWork = TRUE)
-    ms <- openMSfile(file_abs)
-    on.exit(try(close(ms), silent = TRUE), add = TRUE)
-    hdr <- header(ms)
+    ms <- mzR::openMSfile(file_abs)
+    on.exit(try(mzR::close(ms), silent = TRUE), add = TRUE)
+    hdr <- mzR::header(ms)
     n <- nrow(hdr)
     if (!n) {
         return(0L)
@@ -928,7 +937,7 @@ mzMLToParquet <- function(
                                   formatC(b, width = 5, flag = "0"),
                                   "-{i}.parquet"))
         } else {
-            tbl <- as_arrow_table(batch_df)
+            tbl <- .spectra_arrow_table(batch_df)
             if (is.null(writer)) {
                 schema <- tbl$schema
                 sink <- FileOutputStream$create(
@@ -980,7 +989,7 @@ mzMLToParquet <- function(
                                  compression,
                                  row_group_size = .DEFAULT_ROW_GROUP_SIZE,
                                  basename) {
-    tbl <- as_arrow_table(batch_df)
+    tbl <- .spectra_arrow_table(batch_df)
     write_dataset(
         tbl, path = dest, format = "parquet",
         partitioning = partitioning,

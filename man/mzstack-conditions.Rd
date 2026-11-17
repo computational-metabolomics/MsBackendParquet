@@ -47,6 +47,7 @@ Every condition inherits from \code{mzstack_error}, then \code{error} and
    Class \tab Raised when \cr
    \code{mzstack_format} \tab the directory is not readable as mzStack: no manifest, another format, an unsupported major version, mixed run kinds \cr
    \code{mzstack_archive} \tab a referenced mzPeak archive cannot be read as its specification requires \cr
+   \code{mzstack_reference} \tab a source dataset another dataset declares cannot be located, cannot be read, or has a different \code{uid} \cr
    \code{mzstack_study} \tab a repository study cannot be ingested \cr
    \code{mzstack_stale} \tab a projection, index or reference no longer matches the run it was built from \cr
    \code{mzstack_unsupported} \tab a valid request outside what this implementation supports \cr
@@ -59,6 +60,12 @@ Every condition inherits from \code{mzstack_error}, then \code{error} and
 A \code{mzstack_capability} error and an empty result are different outcomes:
 the first says the question could not be asked, the second that nothing
 matched.
+
+One further class is not a failure the specification classifies but a
+property of concurrent writing: \code{mzstack_conflict} is raised by
+\code{\link[=writeManifest]{writeManifest()}} when another writer holds the manifest lock or has
+committed since the manifest was read. Nothing has been written; re-read
+the manifest and re-apply the change.
 
 \code{mzstackError()} is exported so that packages layered on MsBackendParquet
 raise the same classes.

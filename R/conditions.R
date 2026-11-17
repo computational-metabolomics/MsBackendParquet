@@ -20,6 +20,7 @@
 #' | --- | --- |
 #' | `mzstack_format` | the directory is not readable as mzStack: no manifest, another format, an unsupported major version, mixed run kinds |
 #' | `mzstack_archive` | a referenced mzPeak archive cannot be read as its specification requires |
+#' | `mzstack_reference` | a source dataset another dataset declares cannot be located, cannot be read, or has a different `uid` |
 #' | `mzstack_study` | a repository study cannot be ingested |
 #' | `mzstack_stale` | a projection, index or reference no longer matches the run it was built from |
 #' | `mzstack_unsupported` | a valid request outside what this implementation supports |
@@ -30,6 +31,12 @@
 #' A `mzstack_capability` error and an empty result are different outcomes:
 #' the first says the question could not be asked, the second that nothing
 #' matched.
+#'
+#' One further class is not a failure the specification classifies but a
+#' property of concurrent writing: `mzstack_conflict` is raised by
+#' [writeManifest()] when another writer holds the manifest lock or has
+#' committed since the manifest was read. Nothing has been written; re-read
+#' the manifest and re-apply the change.
 #'
 #' `mzstackError()` is exported so that packages layered on MsBackendParquet
 #' raise the same classes.
@@ -56,9 +63,9 @@
 #' res
 NULL
 
-.MZSTACK_ERROR_CLASSES <- c("format", "archive", "study", "stale",
-                            "unsupported", "semantic", "capability",
-                            "resource")
+.MZSTACK_ERROR_CLASSES <- c("format", "archive", "reference", "study",
+                            "stale", "unsupported", "semantic", "capability",
+                            "resource", "conflict")
 
 #' @rdname mzstack-conditions
 #'

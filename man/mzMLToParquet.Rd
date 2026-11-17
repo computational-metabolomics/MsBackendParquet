@@ -28,8 +28,10 @@ Parquet dataset. The directory must not already contain a
 \code{MsBackendParquet} dataset, unless \code{overwrite = TRUE}.}
 
 \item{partitioning}{\code{character} with the spectra variables to use
-as Hive partitioning columns (e.g. \code{"dataOrigin"}). Empty
-(default) writes a single un-partitioned set of files.}
+as Hive partitioning columns below each run (e.g. \code{"msLevel"}).
+Empty (default) writes a single un-partitioned set of files per
+run. \code{"dataOrigin"} is redundant, since each input file is already
+its own run, and is dropped with a warning.}
 
 \item{compression}{\code{character(1)} Parquet compression codec, passed
 to \code{\link[arrow:write_parquet]{arrow::write_parquet()}} / \code{\link[arrow:write_dataset]{arrow::write_dataset()}}. Defaults

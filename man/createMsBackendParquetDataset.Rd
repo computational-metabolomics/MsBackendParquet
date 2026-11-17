@@ -37,9 +37,11 @@ to \code{MsBackendMzR()}.}
 processed per iteration.}
 
 \item{partitioning}{\code{character} with the names of the spectra
-variables to use as Hive partitioning columns. Use an empty
-vector (the default) to write a single un-partitioned set of
-files.}
+variables to use as Hive partitioning columns below each run
+(e.g. \code{"msLevel"}). Use an empty vector (the default) to write a
+single un-partitioned set of files per run. \code{"dataOrigin"} is
+redundant whenever each source file is already its own run, which
+is always the case for \code{x}, and is then dropped with a warning.}
 
 \item{compression}{\code{character(1)} with the Parquet compression codec
 to use. Defaults to \code{"snappy"}. See
@@ -86,9 +88,11 @@ The function writes a single Parquet dataset (under
 \verb{<path>/spectra}) containing the spectra metadata plus the m/z and
 intensity values as Parquet \verb{list<double>} columns.
 
-Spectra metadata that are entirely \code{NA} (and not part of the Spectra
-core variables) are dropped before writing to keep the on-disk
-dataset compact.
+With \code{data}, only the columns it carries are written, and a core
+Spectra variable that is entirely \code{NA} is not written at all; the
+backend reports a core variable without a column as missing values.
+Other columns, including list columns of peak annotations, are written
+as given.
 
 Each source file becomes its own run, written to
 \verb{<path>/spectra/run_id=<id>/}. If \code{partitioning} is supplied

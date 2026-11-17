@@ -17,6 +17,22 @@
 .duckdb_state$pid <- NA_integer_
 .duckdb_state$views <- new.env(parent = emptyenv())
 
+#' Number of threads DuckDB and Arrow may use.
+#'
+#' The `MsBackendParquet.threads` option when it is set. Otherwise at most
+#' two, and only one when the registered BiocParallel backend is serial, so
+#' the package does not take every core of a shared machine by default.
+#'
+#' @importFrom BiocParallel bpparam bpworkers
+#'
+#' @noRd
+.n_threads <- function() {
+    n <- getOption("MsBackendParquet.threads")
+    if (is.null(n))
+        n <- min(2L, bpworkers(bpparam()))
+    max(1L, as.integer(n))
+}
+
 #' Session settings applied once per connection.
 #'
 #' `parquet_metadata_cache` is off by default in DuckDB, which means the
@@ -35,11 +51,8 @@
 #'
 #' @noRd
 .duckdb_configure <- function(con) {
-    settings <- "SET parquet_metadata_cache = true"
-    threads <- getOption("MsBackendParquet.threads")
-    if (!is.null(threads))
-        settings <- c(settings,
-                      sprintf("SET threads = %d", as.integer(threads)))
+    settings <- c("SET parquet_metadata_cache = true",
+                  sprintf("SET threads = %d", .n_threads()))
     mem <- getOption("MsBackendParquet.memoryLimit")
     if (!is.null(mem))
         settings <- c(settings, sprintf("SET memory_limit = '%s'", mem))

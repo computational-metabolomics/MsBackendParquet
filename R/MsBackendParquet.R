@@ -3,6 +3,7 @@
 #' @title Apache Parquet-based MS data backend
 #'
 #' @aliases MsBackendParquet-class
+#' @aliases MsBackendParquet-package
 #' @aliases backendInitialize,MsBackendParquet-method
 #' @aliases backendMerge,MsBackendParquet-method
 #' @aliases dataStorage,MsBackendParquet-method
@@ -50,9 +51,8 @@
 #' The backend uses the [Apache Arrow](https://arrow.apache.org/docs/r)
 #' R bindings to read and write Parquet files. Spectra metadata together
 #' with the m/z and intensity values (stored as Parquet `list<double>`
-#' columns) live in a single directory that can optionally be
-#' Hive-partitioned (for example by `dataOrigin`) to enable Arrow's
-#' partition pruning and parallel processing.
+#' columns) live in one directory per run, which can optionally be further
+#' Hive-partitioned (for example by `msLevel`) to enable partition pruning.
 #'
 #' New datasets can be created from raw MS data files using
 #' [createMsBackendParquetDataset()] or by changing the backend of an
@@ -64,6 +64,8 @@
 #' they are and are never modified: the dataset holds only a small derived
 #' index of the spectrum metadata, and peak data is read from the archives
 #' on demand. See [createMzPeakDataset()] and [filterContainsMz()].
+#'
+#' See `vignette("MsBackendParquet")` for a worked introduction.
 #'
 #' @details
 #'
@@ -152,12 +154,17 @@
 #'   path, one element per spectrum.
 #' - `intensity()` / `mz()`: return [IRanges::NumericList()] objects.
 #' - `intensity<-` / `mz<-`: not supported.
+#' - `centroided()` / `smoothed()`: return a `logical` vector of length
+#'   `length(object)`, `NA` where the source data does not say.
 #' - `peaksData()`: returns a `list` of two-column matrices.
 #' - `peaksVariables()`: returns `c("mz", "intensity")`, followed by any
 #'   peak-annotation variable a native dataset stores beside them: a list
 #'   column with one value per peak, such as a merged spectrum's per-peak
 #'   signal-to-noise. Such variables are written by passing them as list
 #'   columns in `data` to `createMsBackendParquetDataset()`.
+#' - `precScanNum()`: returns an `integer` vector of length `length(object)`
+#'   with the scan number of each spectrum's precursor, `NA` for spectra
+#'   without one.
 #' - `reset()`: re-initialises the backend from disk and drops cached
 #'   spectra variables.
 #' - `spectraData()`: returns a `DataFrame` with the requested spectra

@@ -1,6 +1,6 @@
 Package: MsBackendParquet
 Title: Apache Parquet-based Mass Spectrometry Data Backend
-Version: 0.99.8
+Version: 0.99.11
 Authors@R: c(
     person(
         "Ossama",
@@ -13,7 +13,17 @@ Authors@R: c(
         "Weber",
         role=c("aut"),
         email="r.j.weber@bham.ac.uk",
-        comment = c(ORCID = "0000-0002-8796-4771")))
+        comment = c(ORCID = "0000-0002-8796-4771")),
+    person(
+        "Johannes",
+        "Rainer",
+        role=c("ctb"),
+        email="Johannes.Rainer@eurac.edu",
+        comment = c(ORCID = "0000-0002-6977-7147")),
+    person(
+        "BioFAIR UK",
+        role="fnd",
+        comment="BioFAIR Pathfinder Project"))
 Description: Mass spectrometry (MS) data backend for the Spectra
     Bioconductor package that stores and retrieves spectra and peak data
     from on-disk Apache Parquet datasets. Spectra metadata together with
@@ -26,7 +36,7 @@ Description: Mass spectrometry (MS) data backend for the Spectra
 License: Artistic-2.0
 Encoding: UTF-8
 Depends:
-    R (>= 4.4.0),
+    R (>= 4.6.0),
     Spectra (>= 1.16.0)
 Imports:
     arrow (>= 14.0.0),
@@ -37,7 +47,6 @@ Imports:
     jsonlite,
     methods,
     MsCoreUtils,
-    mzR,
     ProtGenerics (>= 1.36.0),
     S4Vectors,
     stats,
@@ -50,11 +59,13 @@ Suggests:
     dplyr,
     knitr,
     MsDataHub,
+    MsExperiment,
+    mzR,
     rmarkdown,
     SpectraQL,
     testthat (>= 3.0.0)
-URL: https://github.com/ossedb/MsBackendParquet
-BugReports: https://github.com/ossedb/MsBackendParquet/issues
+URL: https://github.com/computational-metabolomics/MsBackendParquet
+BugReports: https://github.com/computational-metabolomics/MsBackendParquet/issues
 biocViews: Infrastructure, MassSpectrometry, Metabolomics, Proteomics,
     DataImport
 VignetteBuilder: knitr
@@ -74,4 +85,4 @@ Collate:
     'sample-data.R'
     'zzz.R'
 Config/testthat/edition: 3
-Config/roxygen2/version: 8.1.0
+Config/roxygen2/version: 8.1.1

@@ -56,6 +56,37 @@ The backend extends `MsBackendCached` from `r Biocpkg("Spectra")` so it
 benefits from caching of user-defined spectra variables while keeping
 the on-disk dataset read-only.
 
+## Relation to other Spectra backends
+
+`MsBackendMzR` from `r Biocpkg("Spectra")` keeps the spectra metadata in
+memory and reads peaks from the raw mzML files on demand: nothing has to be
+converted, but every peak access parses the files again.
+`r Biocpkg("MsBackendSql")` stores spectra in an SQL database, which suits
+data shared from a database server. `r Biocpkg("SpectraStash")` saves and
+restores whole `Spectra` objects in interoperable formats such as HDF5. It
+is for exchanging an object, not for querying it on disk.
+
+`MsBackendParquet` converts once, like `MsBackendSql`, and then queries a
+database engine, DuckDB. But its storage is plain Parquet files that need
+no server and that other tools, such as Python, DuckDB or Spark, read
+directly. It can also index mzPeak archives where they are, without
+converting them.
+
+# Installation
+
+The package is installed from Bioconductor:
+
+```{r install, eval = FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("MsBackendParquet")
+```
+
+Reading raw mzML files needs the `r Biocpkg("mzR")` package, which
+`BiocManager::install("MsBackendParquet", dependencies = TRUE)` installs
+too. Datasets made from mzPeak archives or from in-memory data do not
+need it.
+
 # Creating a Parquet dataset
 
 The examples below use a DDA data file of a pesticide mix, provided by
@@ -102,6 +133,15 @@ list.files(file.path(path, "spectra"))
 `mzMLToParquet()` imports MS data via `MsBackendMzR()` and writes the
 spectra metadata together with the `mz`/`intensity` values as Parquet
 `list<double>` columns.
+
+A `Spectra` object that is already loaded, with any backend, can instead be
+moved onto Parquet with `setBackend()`. The destination is given as `path`:
+
+```{r set-backend}
+sps_mem <- Spectra(fl_named, source = MsBackendMzR())
+sps_pq <- setBackend(sps_mem, MsBackendParquet(), path = tempfile())
+sps_pq
+```
 
 # Accessing data
 
@@ -340,6 +380,13 @@ length(hits)
 basename(dataOrigin(hits))
 ```
 
+`filterContainsMz()` works on the backend, and the result is wrapped in a
+`Spectra` object like any other backend:
+
+```{r filter-contains-mz-spectra}
+Spectra(hits)
+```
+
 For datasets where this is a common query, build an m/z-ordered copy of
 the signal. Sorting is what makes the block statistics useful, so the
 same search then reads a handful of blocks instead of everything:
@@ -383,7 +430,7 @@ spectraData(be_qc, c("rtime", "subject", "timepoint"))
 and `filterSampleData()` selects on them:
 
 ```{r filter-sample-data}
-filterSampleData(be_qc, timepoint == 6)
+Spectra(filterSampleData(be_qc, timepoint == 6))
 ```
 
 The sample metadata is held once per run, not copied onto every spectrum.
@@ -402,8 +449,22 @@ over it, untouched.
 
 Runs with no row get `NA`, so metadata covering only some runs is fine. To
 go further, and link samples to spectra in an experiment-wide object, pass
-the table to `r Biocpkg("MsExperiment")`'s `linkSampleData()`, which keys
-on `dataOrigin` or `run_id`.
+the same table to `r Biocpkg("MsExperiment")` and link the two on
+`run_id`:
+
+```{r link-sample-data, message = FALSE}
+library(MsExperiment)
+
+samples <- S4Vectors::DataFrame(run_id = c("QC01", "QC02"),
+                                subject = c("S1", "S2"),
+                                timepoint = c(0L, 6L))
+mse <- MsExperiment(sampleData = samples, spectra = Spectra(be_qc))
+mse <- linkSampleData(mse, with = "sampleData.run_id = spectra.run_id")
+mse
+
+## The spectra of the second sample.
+spectra(mse[2])
+```
 
 # The in-memory metadata cache
 
@@ -433,10 +494,15 @@ options(MsBackendParquet.cacheColumns =
 options(MsBackendParquet.cacheMaxCells = 5e7)
 ```
 
-Two further options tune the underlying DuckDB session:
-`MsBackendParquet.threads` (maps to DuckDB's `threads`) and
-`MsBackendParquet.memoryLimit` (maps to `memory_limit`). Both default to
-DuckDB's own defaults when unset.
+Two further options tune the underlying DuckDB session.
+`MsBackendParquet.threads` sets how many threads DuckDB uses, and Arrow
+too. When it is unset, both use at most two threads, and one when the
+registered `r Biocpkg("BiocParallel")` backend is serial, so the package
+does not take every core of a shared machine. DuckDB reads the option when
+the package first opens its connection, and Arrow when the package is
+loaded, so set it before either.
+`MsBackendParquet.memoryLimit` maps to DuckDB's `memory_limit`, and is
+left at DuckDB's default when unset.
 
 # Streaming large mzML files
 
@@ -471,7 +537,7 @@ Across a suite of seven queries over 380,100 spectra (50 mzML files),
 the Parquet backend is the fastest of the on-disk `Spectra` backends on
 5 of 7 queries (medians in ms, lower is better):
 
-| query | parquet | mzR | HDF5 | SQL |
+| query | MsBackendParquet | MsBackendMzR | MsBackendHdf5Peaks | MsBackendOfflineSql |
 |---|---|---|---|---|
 | `filterRt()`, wide range | **12.24** | 15.44 | 24.05 | 380.19 |
 | `filterRt()`, narrow range | 11.23 | **5.33** | 14.76 | 348.17 |
@@ -482,8 +548,8 @@ the Parquet backend is the fastest of the on-disk `Spectra` backends on
 | `spectraData()` of MS1 spectra | 26.09 | **17.27** | 22.30 | 718.91 |
 
 The benchmark scripts live in
-[`inst/benchmarks/`](https://github.com/computational-metabolomics/MsBackendParquet/tree/main/inst/benchmarks);
-see `inst/benchmarks/performance.md` for the full numbers, the
+[`inst/benchmarks/`](https://github.com/computational-metabolomics/MsBackendParquet/tree/devel/inst/benchmarks);
+see `inst/benchmarks/performance.Rmd` for the full numbers, the
 configuration sweeps over the tunable options, and the design
 considerations behind them.
 
