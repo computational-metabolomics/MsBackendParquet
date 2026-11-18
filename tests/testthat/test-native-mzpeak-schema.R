@@ -187,3 +187,34 @@ test_that("partitioning on dataOrigin is dropped as the run already is it", {
     expect_identical(
         .manifest_partitioning(.manifest_read(path), "a"), character())
 })
+
+test_that("mzR's base peak and m/z range names round-trip via mzPeak columns", {
+    sd <- .make_test_data()
+    sd$basePeakMZ <- c(110, 111, 112)
+    sd$lowMZ <- c(100, 101, 102)
+    sd$highMZ <- c(110, 111, 112)
+    path <- tempfile()
+    be <- backendInitialize(MsBackendParquet(), path = path, data = sd)
+    disk <- .raw_column_names(path)
+    expect_true(all(c("base_peak_mz", "lowest_observed_mz",
+                      "highest_observed_mz") %in% disk))
+    expect_false(any(c("basePeakMZ", "lowMZ", "highMZ") %in% disk))
+    expect_equal(be$basePeakMZ, sd$basePeakMZ)
+    expect_equal(be$lowMZ, sd$lowMZ)
+    expect_equal(be$highMZ, sd$highMZ)
+})
+
+test_that("a variable differing from a canonical one only by case is refused", {
+    sd <- .make_test_data()
+    sd$basePeakMz <- c(110, 111, 112)
+    expect_error(
+        backendInitialize(MsBackendParquet(), path = tempfile(), data = sd),
+        class = "mzstack_semantic", regexp = "'basePeakMz' \\(use 'basePeakMZ'\\)")
+
+    sd <- .make_test_data()
+    sd$flag <- c("a", "b", "c")
+    sd$FLAG <- c("a", "b", "c")
+    expect_error(
+        backendInitialize(MsBackendParquet(), path = tempfile(), data = sd),
+        class = "mzstack_semantic", regexp = "other than by case")
+})

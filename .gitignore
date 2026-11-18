@@ -61,3 +61,4 @@ src/*.so
 
 # Generated benchmark artifacts (raw per-run sweep tables; figures/ is committed)
 inst/benchmarks/results/
+local_data/

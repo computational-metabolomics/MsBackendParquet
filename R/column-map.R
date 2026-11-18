@@ -79,11 +79,11 @@
         # and downstream code (including SpectraQL) looks for them.
         r("totIonCurrent", '"total_ion_current"', "total_ion_current",
           "DOUBLE"),
-        r("basePeakMz", '"base_peak_mz"', "base_peak_mz", "DOUBLE"),
+        r("basePeakMZ", '"base_peak_mz"', "base_peak_mz", "DOUBLE"),
         r("basePeakIntensity", '"base_peak_intensity"',
           "base_peak_intensity", "DOUBLE"),
-        r("lowMz", '"lowest_observed_mz"', "lowest_observed_mz", "DOUBLE"),
-        r("highMz", '"highest_observed_mz"', "highest_observed_mz", "DOUBLE"),
+        r("lowMZ", '"lowest_observed_mz"', "lowest_observed_mz", "DOUBLE"),
+        r("highMZ", '"highest_observed_mz"', "highest_observed_mz", "DOUBLE"),
         # Whichever representation this spectrum actually stores. An archive
         # holding only profile data has no `number_of_peaks` column at all,
         # so the three candidates are tried in order and the first whose
@@ -153,10 +153,10 @@
         m("collisionEnergy", "collision_energy"),
         m("isolationWindowTargetMz", "isolation_window_target"),
         m("totIonCurrent", "total_ion_current"),
-        m("basePeakMz", "base_peak_mz"),
+        m("basePeakMZ", "base_peak_mz"),
         m("basePeakIntensity", "base_peak_intensity"),
-        m("lowMz", "lowest_observed_mz"),
-        m("highMz", "highest_observed_mz"),
+        m("lowMZ", "lowest_observed_mz"),
+        m("highMZ", "highest_observed_mz"),
         m("peaksCount", "number_of_data_points"),
         m("injectionTime", "ion_injection_time"),
         m("filterString", "filter_string"),
@@ -220,6 +220,7 @@
         df[[e$spectra]] <- NULL
         df[[e$mzpeak]] <- v
     }
+    .check_case_collisions(colnames(df))
 
     # mzPeak's `spectrum_index` MUST be the run's unique, monotonic 0-based
     # key. `spectrum_id_` is unique across the whole dataset and allocated
@@ -231,6 +232,37 @@
     }
 
     df
+}
+
+#' Refuse columns that DuckDB, which resolves identifiers case-insensitively,
+#' cannot tell apart from a spectra variable the view emits, or from each
+#' other.
+#'
+#' Such a column is not written under the name it was given: the view would
+#' rename it (`basePeakMz` becomes `basePeakMz_1` beside the view's own
+#' `basePeakMZ`), and the variable it was meant to fill would read as missing.
+#'
+#' @param x `character` with the column names about to be written, after
+#'     `.spectra_df_to_mzpeak()` has mapped the variables it knows.
+#'
+#' @noRd
+.check_case_collisions <- function(x) {
+    emitted <- c(.MZPEAK_TO_SPECTRA$spectra, "dataOrigin", "dataStorage")
+    near <- x[tolower(x) %in% tolower(emitted) & !x %in% emitted]
+    dup <- x[duplicated(tolower(x)) | duplicated(tolower(x), fromLast = TRUE)]
+    if (length(near)) {
+        want <- emitted[match(tolower(near), tolower(emitted))]
+        mzstackError("semantic",
+                     "Spectra variable(s) differ from a canonical variable ",
+                     "only by case: ",
+                     paste0("'", near, "' (use '", want, "')",
+                            collapse = ", "), ".")
+    }
+    if (length(dup))
+        mzstackError("semantic",
+                     "Spectra variables must differ other than by case: ",
+                     paste0("'", unique(dup), "'", collapse = ", "), ".")
+    invisible(TRUE)
 }
 
 #' Translate `Spectra` spectra-variable names to their mzPeak on-disk column
