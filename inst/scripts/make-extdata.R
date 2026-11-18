@@ -67,5 +67,17 @@ dir.create(staging)
 
 unlink(staging, recursive = TRUE)
 
+## ---------------------------------------------------------------------------
+## msn.mzML.gz
+##
+## Not generated here: a copy of msPurity's
+## inst/extdata/msn-standards/msPurity_L_tryptophan_6305_MSn.mzML.gz
+## (computational-metabolomics/msPurity#119), a reduced Thermo MS1-MS4
+## acquisition of an L-tryptophan standard converted by msconvert. Its 176
+## spectra have scan numbers that differ from their positions, MS2-MS4
+## precursor references, and CID and HCD activation, so it covers what
+## demo.mzML cannot. Copy it again rather than regenerating it.
+## ---------------------------------------------------------------------------
+
 for (f in list.files(extdata, full.names = TRUE))
     message(basename(f), ": ", file.size(f), " bytes")

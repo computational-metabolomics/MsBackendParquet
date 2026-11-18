@@ -69,3 +69,29 @@ test_that("engine = 'mzr' streams an mzML file when mzR is available", {
     expect_equal(as.numeric(got[, "intensity"]),
                  as.numeric(ref[, 2L]))
 })
+
+test_that("gzip-compressed mzML is accepted and named without suffixes", {
+    expect_identical(.ms_file_ext(c("a.mzML.gz", "b.MZXML.GZ", "c.mzML",
+                                    "d.cdf.gz", "e.gz", "f.tar.gz", "g")),
+                     c("mzml.gz", "mzxml.gz", "mzml", "cdf.gz", "gz",
+                       "tar.gz", ""))
+    expect_identical(.native_run_id(c("x/QC01.mzML.gz", "QC02.mzXML.gz",
+                                      "QC03.mzML")),
+                     c("QC01", "QC02", "QC03"))
+    for (ext in c(".cdf.gz", ".gz", ".tar.gz")) {
+        bad <- tempfile(fileext = ext)
+        file.create(bad)
+        expect_error(mzMLToParquet(bad, tempfile()),
+                     class = "mzstack_unsupported", info = ext)
+        unlink(bad)
+    }
+    skip_if_not_installed("mzR")
+    f <- system.file("extdata", "msn.mzML.gz", package = "MsBackendParquet")
+    for (engine in c("spectra", "mzr")) {
+        be <- mzMLToParquet(f, tempfile(), engine = engine, verbose = FALSE)
+        expect_identical(length(be), 176L, info = engine)
+        expect_identical(unique(be$run_id), "msn", info = engine)
+        expect_identical(unique(dataOrigin(be)), normalizePath(f),
+                         info = engine)
+    }
+})

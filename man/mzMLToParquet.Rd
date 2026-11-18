@@ -21,7 +21,10 @@ mzMLToParquet(
 \arguments{
 \item{files}{\code{character} with the paths to the input mzML, mzXML or
 netCDF files. Files must exist on disk and have a recognised
-extension (\code{.mzML}, \code{.mzXML}, \code{.cdf}, \code{.nc}; case-insensitive).}
+extension (\code{.mzML}, \code{.mzXML}, \code{.cdf}, \code{.nc}; case-insensitive).
+mzML and mzXML may be gzip-compressed (\code{.mzML.gz}, \code{.mzXML.gz}).
+Each file becomes one run, named after the file without its
+extension and compression suffix.}
 
 \item{path}{\code{character(1)} with the destination directory for the
 Parquet dataset. The directory must not already contain a
@@ -82,6 +85,25 @@ directory, prints a short summary of what was written and returns
 an initialised \code{MsBackendParquet} instance ready to be wrapped in a
 \code{\link[Spectra:Spectra]{Spectra::Spectra()}} object.
 }
+\section{Spectra variables}{
+
+
+Both engines store the same spectra variables, those \code{MsBackendMzR}
+reports for the file, with the same values. \code{scanIndex} is the
+spectrum's 1-based position in its file, \code{acquisitionNum} the
+instrument's scan number, and \code{precScanNum} the \code{acquisitionNum} of the
+precursor spectrum, so an MSn spectrum's parent is the spectrum of the
+same run whose \code{acquisitionNum} equals its \code{precScanNum}.
+
+\code{activationType} holds the dissociation method of a spectrum's first
+precursor (its own, for an MSn spectrum) as a PSI-MS accession, for
+example \code{"MS:1000422"} for beam-type collision-induced dissociation
+(HCD) or \code{"MS:1000133"} for collision-induced dissociation. mzR does not
+report it, so it is read from the mzML \verb{<activation>} elements in a
+second pass over the file. It is missing where the file records none,
+and for mzXML and netCDF input.
+}
+
 \examples{
 library(Spectra)
 
