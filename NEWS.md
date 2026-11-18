@@ -2,9 +2,14 @@
 
 - Don't rename spectra metadata columns `"lowMZ"`, `"highMZ"` and `"basePeakMZ"`
   to `"lowMz"`, `"highMz"` and `"basePeakMz"` to be compliant with *Spectra* and
-  *mzR*.
+  *mzR*. The mzStack variable registry uses the same names. Both conversion
+  engines now store them as mzPeak's `base_peak_mz`, `lowest_observed_mz` and
+  `highest_observed_mz`.
+- A spectra variable whose name differs from a canonical variable, or from
+  another variable, only by case is refused with `mzstack_semantic` rather
+  than written under a name the read view would have to rename.
 - `spectraData()` to return `mz` and `intensity` as uncompressed `NumericList`.
-- Add a progress bar to `createMsBackendParquetDataset()`.
+- Add a progress bar to `setBackend()`.
 - Add additional unit tests.
 
 # MsBackendParquet 0.99.10

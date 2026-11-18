@@ -220,6 +220,7 @@
         df[[e$spectra]] <- NULL
         df[[e$mzpeak]] <- v
     }
+    .check_case_collisions(colnames(df))
 
     # mzPeak's `spectrum_index` MUST be the run's unique, monotonic 0-based
     # key. `spectrum_id_` is unique across the whole dataset and allocated
@@ -231,6 +232,37 @@
     }
 
     df
+}
+
+#' Refuse columns that DuckDB, which resolves identifiers case-insensitively,
+#' cannot tell apart from a spectra variable the view emits, or from each
+#' other.
+#'
+#' Such a column is not written under the name it was given: the view would
+#' rename it (`basePeakMz` becomes `basePeakMz_1` beside the view's own
+#' `basePeakMZ`), and the variable it was meant to fill would read as missing.
+#'
+#' @param x `character` with the column names about to be written, after
+#'     `.spectra_df_to_mzpeak()` has mapped the variables it knows.
+#'
+#' @noRd
+.check_case_collisions <- function(x) {
+    emitted <- c(.MZPEAK_TO_SPECTRA$spectra, "dataOrigin", "dataStorage")
+    near <- x[tolower(x) %in% tolower(emitted) & !x %in% emitted]
+    dup <- x[duplicated(tolower(x)) | duplicated(tolower(x), fromLast = TRUE)]
+    if (length(near)) {
+        want <- emitted[match(tolower(near), tolower(emitted))]
+        mzstackError("semantic",
+                     "Spectra variable(s) differ from a canonical variable ",
+                     "only by case: ",
+                     paste0("'", near, "' (use '", want, "')",
+                            collapse = ", "), ".")
+    }
+    if (length(dup))
+        mzstackError("semantic",
+                     "Spectra variables must differ other than by case: ",
+                     paste0("'", unique(dup), "'", collapse = ", "), ".")
+    invisible(TRUE)
 }
 
 #' Translate `Spectra` spectra-variable names to their mzPeak on-disk column
