@@ -218,3 +218,19 @@ test_that("a variable differing from a canonical one only by case is refused", {
         backendInitialize(MsBackendParquet(), path = tempfile(), data = sd),
         class = "mzstack_semantic", regexp = "other than by case")
 })
+
+test_that("activationType is stored as activation_type and read back", {
+    sd <- .make_test_data()
+    sd$activationType <- c(NA, NA, "MS:1000422")
+    path <- tempfile()
+    be <- backendInitialize(MsBackendParquet(), path = path, data = sd)
+    raw <- .read_raw_spectra(path)
+    expect_true("activation_type" %in% names(raw))
+    expect_false("activationType" %in% names(raw))
+    expect_identical(be$activationType, c(NA, NA, "MS:1000422"))
+
+    ## Every dataset reports the variable, missing where it has no column.
+    be <- .make_test_backend()
+    expect_true("activationType" %in% spectraVariables(be))
+    expect_identical(be$activationType, rep(NA_character_, length(be)))
+})

@@ -54,13 +54,15 @@
     id
 }
 
-#' The run id for a natively converted source file.
+#' The run id for a natively converted source file: its name without the
+#' extension or a compression suffix (`QC01.mzML.gz` is run `QC01`).
 #'
 #' @importFrom tools file_path_sans_ext
 #'
 #' @noRd
 .native_run_id <- function(file) {
-    .sanitise_run_id(tools::file_path_sans_ext(basename(file)))
+    .sanitise_run_id(tools::file_path_sans_ext(basename(file),
+                                               compression = TRUE))
 }
 
 #' Make run ids unique, comparing them case-insensitively.

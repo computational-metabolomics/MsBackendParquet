@@ -1,3 +1,21 @@
+# MsBackendParquet 0.99.12
+
+- `mzMLToParquet()` accepts gzip-compressed mzML and mzXML (`.mzML.gz`,
+  `.mzXML.gz`). Run ids drop the compression suffix, so `QC01.mzML.gz`
+  becomes run `QC01`.
+- `engine = "mzr"` stores the same spectra variables as the default engine
+  and `MsBackendMzR`: `acquisitionNum` is the instrument's scan number and
+  `scanIndex` the 1-based position in the file, so the `precScanNum` of an
+  MSn spectrum matches its parent's `acquisitionNum`. `peaksCount` and the
+  header fields the file leaves empty are stored too. Datasets written with
+  `engine = "mzr"` by earlier versions should be converted again.
+- New spectra variable `activationType`: the dissociation method of each
+  spectrum's first precursor as a PSI-MS accession (`"MS:1000422"` for HCD),
+  read from the mzML `<activation>` elements by both engines and stored as
+  mzPeak's `activation_type`. It is missing for mzXML and netCDF input and
+  for datasets without the column.
+- New example file `msn.mzML.gz`, an MS1-MS4 acquisition.
+
 # MsBackendParquet 0.99.11
 
 - Don't rename spectra metadata columns `"lowMZ"`, `"highMZ"` and `"basePeakMZ"`

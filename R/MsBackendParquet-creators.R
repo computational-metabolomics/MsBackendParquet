@@ -231,9 +231,29 @@ createMsBackendParquetDataset <- function(
 #' an initialised `MsBackendParquet` instance ready to be wrapped in a
 #' [Spectra::Spectra()] object.
 #'
+#' @section Spectra variables:
+#'
+#' Both engines store the same spectra variables, those `MsBackendMzR`
+#' reports for the file, with the same values. `scanIndex` is the
+#' spectrum's 1-based position in its file, `acquisitionNum` the
+#' instrument's scan number, and `precScanNum` the `acquisitionNum` of the
+#' precursor spectrum, so an MSn spectrum's parent is the spectrum of the
+#' same run whose `acquisitionNum` equals its `precScanNum`.
+#'
+#' `activationType` holds the dissociation method of a spectrum's first
+#' precursor (its own, for an MSn spectrum) as a PSI-MS accession, for
+#' example `"MS:1000422"` for beam-type collision-induced dissociation
+#' (HCD) or `"MS:1000133"` for collision-induced dissociation. mzR does not
+#' report it, so it is read from the mzML `<activation>` elements in a
+#' second pass over the file. It is missing where the file records none,
+#' and for mzXML and netCDF input.
+#'
 #' @param files `character` with the paths to the input mzML, mzXML or
 #'     netCDF files. Files must exist on disk and have a recognised
 #'     extension (`.mzML`, `.mzXML`, `.cdf`, `.nc`; case-insensitive).
+#'     mzML and mzXML may be gzip-compressed (`.mzML.gz`, `.mzXML.gz`).
+#'     Each file becomes one run, named after the file without its
+#'     extension and compression suffix.
 #'
 #' @param path `character(1)` with the destination directory for the
 #'     Parquet dataset. The directory must not already contain a
@@ -425,17 +445,23 @@ mzMLToParquet <- function(
 #' chunk. Metadata and peaks are both taken from the same `sps`, so they
 #' cannot be sliced apart.
 #'
+#' @param activation `NULL`, or the activation table of the source file the
+#'     spectra come from (`.source_activation_table()`), which fills
+#'     `activationType` where the backend does not report it.
+#'
 #' @return the number of spectra written.
 #'
 #' @noRd
 .write_spectra_block <- function(path, sps, dest, next_id, uid_base,
                                  partitioning = character(),
                                  compression = .DEFAULT_COMPRESSION,
-                                 row_group_size = .DEFAULT_ROW_GROUP_SIZE) {
+                                 row_group_size = .DEFAULT_ROW_GROUP_SIZE,
+                                 activation = NULL) {
     sv <- setdiff(Spectra::spectraVariables(sps), c("mz", "intensity"))
     spd <- as.data.frame(Spectra::spectraData(sps, columns = sv))
     if (!nrow(spd))
         return(0L)
+    spd <- .with_activation(spd, activation)
     spd$spectrum_id_ <- seq.int(next_id + 1L, next_id + nrow(spd))
     spd <- .spectra_df_to_mzpeak(spd, uid_base = uid_base)
     .write_spectra_chunk(
@@ -621,7 +647,8 @@ mzMLToParquet <- function(
             path, sps[seq.int(b$start, b$end)], dest = dir,
             next_id = acc$next_id, uid_base = acc$next_id + 1L,
             partitioning = partitioning, compression = compression,
-            row_group_size = row_group_size)
+            row_group_size = row_group_size,
+            activation = .source_activation_table(b$origin))
         acc$next_id <- acc$next_id + n
         acc <- .native_acc_add(acc, b$run_id, dir, n, b$origin)
     }
@@ -669,6 +696,7 @@ mzMLToParquet <- function(
     for (b in blocks) {
         dir <- .run_dir(path, b$run_id)
         base <- acc$next_id + 1L
+        activation <- .source_activation_table(b$origin)
         # `f` bounds how much is held in memory at once; it must never decide
         # the order. Iterating its levels would write interleaved files out of
         # input order, and `setBackend()` would return a permutation of
@@ -679,7 +707,8 @@ mzMLToParquet <- function(
             acc$next_id <- acc$next_id + .write_spectra_block(
                 path, sub, dest = dir, next_id = acc$next_id,
                 uid_base = base, partitioning = partitioning,
-                compression = compression, row_group_size = row_group_size)
+                compression = compression, row_group_size = row_group_size,
+                activation = activation)
             rm(sub); gc(verbose = FALSE)
         }
         acc <- .native_acc_add(acc, b$run_id, dir, acc$next_id - base + 1L,
@@ -707,8 +736,22 @@ mzMLToParquet <- function(
     if (any(is_all_na)) x[, !is_all_na, drop = FALSE] else x
 }
 
-# Recognised input extensions (case-insensitive).
-.MS_INPUT_EXTENSIONS <- c("mzml", "mzxml", "cdf", "nc")
+# Recognised input extensions (case-insensitive). ProteoWizard, which mzR uses
+# for mzML and mzXML, also reads them gzip-compressed; netCDF must be plain.
+.MS_INPUT_EXTENSIONS <- c("mzml", "mzxml", "cdf", "nc", "mzml.gz",
+                          "mzxml.gz")
+
+#' The extension of each file, lower case, keeping a trailing `.gz` together
+#' with the extension before it (`"mzml.gz"`).
+#'
+#' @noRd
+.ms_file_ext <- function(files) {
+    b <- tolower(basename(files))
+    gz <- grepl("\\.gz$", b)
+    inner <- file_ext(sub("\\.gz$", "", b))
+    ifelse(gz, ifelse(nzchar(inner), paste0(inner, ".gz"), "gz"),
+           file_ext(b))
+}
 
 #' Validate that all paths exist and, where they carry an extension, that it
 #' is a supported one.
@@ -726,7 +769,7 @@ mzMLToParquet <- function(
              paste0("'", missing_files, "'", collapse = ", "),
              call. = FALSE)
     }
-    ext <- tolower(file_ext(files))
+    ext <- .ms_file_ext(files)
     ext <- ext[nzchar(ext)]
     bad <- ext[!ext %in% .MS_INPUT_EXTENSIONS]
     if (length(bad)) {
@@ -744,80 +787,48 @@ mzMLToParquet <- function(
 # Streaming mzR engine
 # ------------------------------------------------------------------------------
 
-# Mapping from mzR `header()` column names to Spectra canonical
-# spectra variable names. Columns not listed here are passed through
-# as-is when they survive the all-NA filter; columns named on the
-# right that don't appear in the header are filled with NA later.
-#
-# `isolationWindowLowerOffset` / `isolationWindowUpperOffset` are
-# handled separately: we convert them into
-# `isolationWindowLowerMz` / `isolationWindowUpperMz` using the
-# target m/z, matching the convention used by `MsBackendMzR`.
+# The renames `MsBackendMzR` applies to an `mzR::header()`. Every other
+# header column keeps its mzR name, as `MsBackendMzR` reports it, so both
+# conversion engines see the same spectra variables. `seqNum` is the
+# spectrum's 1-based position in the file and `acquisitionNum` the
+# instrument's scan number, which `precursorScanNum` refers to.
 .MZR_HEADER_RENAME <- c(
-    seqNum = "acquisitionNum",
-    acquisitionNum = "acquisitionNum",
-    msLevel = "msLevel",
-    polarity = "polarity",
-    retentionTime = "rtime",
+    seqNum = "scanIndex",
     precursorScanNum = "precScanNum",
     precursorMZ = "precursorMz",
-    precursorCharge = "precursorCharge",
-    precursorIntensity = "precursorIntensity",
-    collisionEnergy = "collisionEnergy",
-    ionisationEnergy = "ionisationEnergy",
-    lowMZ = "lowMZ",
-    highMZ = "highMZ",
-    basePeakMZ = "basePeakMZ",
-    basePeakIntensity = "basePeakIntensity",
-    totIonCurrent = "totIonCurrent",
-    isolationWindowTargetMZ = "isolationWindowTargetMz",
-    spectrumId = "spectrumId",
-    centroided = "centroided",
-    injectionTime = "injectionTime",
-    scanWindowLowerLimit = "scanWindowLowerLimit",
-    scanWindowUpperLimit = "scanWindowUpperLimit")
+    retentionTime = "rtime",
+    isolationWindowTargetMZ = "isolationWindowTargetMz")
 
-#' Convert an `mzR::header()` data frame into a Spectra-canonical
-#' spectra-variable data frame. Renames known columns, derives
-#' `isolationWindowLowerMz` / `isolationWindowUpperMz` from the offsets
-#' (when both target and offsets are present), drops mzR-only
-#' bookkeeping columns that have no Spectra equivalent and are
-#' uniformly NA.
+#' Convert an `mzR::header()` data frame into the spectra variables
+#' `MsBackendMzR` reports for the same file: `MsBackendMzR`'s renames and
+#' absolute isolation-window bounds from the target and offsets. Every
+#' header column is kept, as the default engine keeps every variable
+#' `MsBackendMzR` reports.
 #'
 #' @noRd
 .mzr_header_to_spectra_df <- function(hdr) {
     hdr <- as.data.frame(hdr, stringsAsFactors = FALSE)
     cn <- colnames(hdr)
-    new_cn <- cn
     matched <- cn %in% names(.MZR_HEADER_RENAME)
-    new_cn[matched] <- .MZR_HEADER_RENAME[cn[matched]]
-    colnames(hdr) <- new_cn
+    cn[matched] <- .MZR_HEADER_RENAME[cn[matched]]
+    colnames(hdr) <- cn
+    if (anyDuplicated(cn))
+        stop("mzR header columns map to duplicate spectra variables: ",
+             paste(unique(cn[duplicated(cn)]), collapse = ", "),
+             call. = FALSE)
 
-    has_target <- "isolationWindowTargetMz" %in% colnames(hdr)
-    has_lower <- "isolationWindowLowerOffset" %in% colnames(hdr)
-    has_upper <- "isolationWindowUpperOffset" %in% colnames(hdr)
-    if (has_target && has_lower) {
-        hdr$isolationWindowLowerMz <-
-            hdr$isolationWindowTargetMz - hdr$isolationWindowLowerOffset
-        hdr$isolationWindowLowerOffset <- NULL
-    }
-    if (has_target && has_upper) {
-        hdr$isolationWindowUpperMz <-
-            hdr$isolationWindowTargetMz + hdr$isolationWindowUpperOffset
-        hdr$isolationWindowUpperOffset <- NULL
-    }
+    tgt <- hdr$isolationWindowTargetMz
+    if (!is.null(tgt) && !is.null(hdr$isolationWindowLowerOffset))
+        hdr$isolationWindowLowerMz <- tgt - hdr$isolationWindowLowerOffset
+    if (!is.null(tgt) && !is.null(hdr$isolationWindowUpperOffset))
+        hdr$isolationWindowUpperMz <- tgt + hdr$isolationWindowUpperOffset
+    hdr$isolationWindowLowerOffset <- NULL
+    hdr$isolationWindowUpperOffset <- NULL
 
     if ("centroided" %in% colnames(hdr) && !is.logical(hdr$centroided)) {
         hdr$centroided <- as.logical(hdr$centroided)
     }
-    if ("peaksCount" %in% colnames(hdr)) {
-        hdr$peaksCount <- NULL
-    }
-
-    .drop_all_na_columns(
-        hdr,
-        keep = c("msLevel", "rtime", "precursorMz", "dataOrigin",
-                 "dataStorage", "acquisitionNum"))
+    hdr
 }
 
 #' Stream-import a set of mzML / mzXML / netCDF files into a Parquet
@@ -902,6 +913,7 @@ mzMLToParquet <- function(
         dir.create(dest, recursive = TRUE)
     }
     sd <- .mzr_header_to_spectra_df(hdr)
+    sd <- .with_activation(sd, .source_activation_table(file_abs))
     sd$dataOrigin <- file_abs
     sd$spectrum_id_ <- seq.int(starting_id + 1L, starting_id + n)
     sd <- .spectra_df_to_mzpeak(sd, uid_base = starting_id + 1L)

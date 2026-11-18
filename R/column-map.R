@@ -107,7 +107,11 @@
           'CAST("instrument_configuration_id" AS INTEGER)',
           "instrument_configuration_id", "INTEGER"),
         r("spectrumType", 'CAST("spectrum_type" AS VARCHAR)',
-          "spectrum_type", "VARCHAR")))
+          "spectrum_type", "VARCHAR"),
+        # The first precursor's dissociation method, a PSI-MS CURIE
+        # descending from MS:1000044 (MS:1000422 for HCD).
+        r("activationType", 'CAST("activation_type" AS VARCHAR)',
+          "activation_type", "VARCHAR")))
 })
 
 # Encoding a `Spectra`-named metadata `data.frame` into mzPeak's on-disk
@@ -164,6 +168,7 @@
         m("scanWindowUpperLimit", "scan_window_upper_limit"),
         m("instrumentConfigurationId", "instrument_configuration_id"),
         m("spectrumType", "spectrum_type"),
+        m("activationType", "activation_type"),
         m("dataOrigin", "data_origin"))
 })
 

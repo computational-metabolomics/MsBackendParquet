@@ -338,7 +338,20 @@ is worth being precise about what changes.
   dataset's unique 0-based key; a spectrum's position within its source file
   (`scanIndex`, which restarts per file) is kept in `scan_index`. The package
   adds only a handful of reserved columns (`spectrum_id_`, `acquisition_num_`,
-  the `n_*` counts).
+  the `n_*` counts). The dissociation method of a spectrum's first
+  precursor, which mzR does not report, is read from the mzML `<activation>`
+  elements and stored in `activation_type` as a PSI-MS accession; it is the
+  `activationType` spectra variable.
+
+```{r msn-activation}
+msn <- mzMLToParquet(system.file("extdata", "msn.mzML.gz",
+                                 package = "MsBackendParquet"),
+                     path = tempfile(), verbose = FALSE)
+sd <- as.data.frame(spectraData(msn, c("msLevel", "acquisitionNum",
+                                       "precScanNum", "activationType")))
+## The first spectrum of each MS level.
+sd[match(1:4, sd$msLevel), ]
+```
 - **Flattening.** mzPeak keeps scans, precursors and selected ions in
   separate tables linked back to the spectrum by a foreign key. The index
   takes the first of each, and records how many there were in `n_scans`,
